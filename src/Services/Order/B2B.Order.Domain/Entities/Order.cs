@@ -146,4 +146,3 @@ public sealed class Order : AggregateRoot<Guid>, IAuditableEntity
             throw new InvalidOperationException($"Order must be in '{expected}' status. Current: '{Status}'.");
     }
 }
-}
