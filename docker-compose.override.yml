@@ -1,0 +1,65 @@
+name: b2b-microservices
+
+# Development overrides - maps local source for hot-reload
+services:
+  identity-service:
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=b2b_identity;Username=b2b_user;Password=b2b_pass
+      - ConnectionStrings__Redis=redis:6379
+      - JwtSettings__SecretKey=B2BPlatformSuperSecretKeyForJWTTokenGeneration2025!
+      - JwtSettings__Issuer=B2B.Identity
+      - JwtSettings__Audience=B2B.Platform
+      - RabbitMQ__Host=rabbitmq
+      - RabbitMQ__Username=b2b_user
+      - RabbitMQ__Password=b2b_pass
+      - OpenTelemetry__Endpoint=http://jaeger:4317
+      - Seq__Url=http://seq:80
+
+  product-service:
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=b2b_product;Username=b2b_user;Password=b2b_pass
+      - ConnectionStrings__Redis=redis:6379
+      - JwtSettings__SecretKey=B2BPlatformSuperSecretKeyForJWTTokenGeneration2025!
+      - JwtSettings__Issuer=B2B.Identity
+      - JwtSettings__Audience=B2B.Platform
+      - RabbitMQ__Host=rabbitmq
+      - RabbitMQ__Username=b2b_user
+      - RabbitMQ__Password=b2b_pass
+      - OpenTelemetry__Endpoint=http://jaeger:4317
+      - Seq__Url=http://seq:80
+
+  order-service:
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=b2b_order;Username=b2b_user;Password=b2b_pass
+      - ConnectionStrings__Redis=redis:6379
+      - JwtSettings__SecretKey=B2BPlatformSuperSecretKeyForJWTTokenGeneration2025!
+      - JwtSettings__Issuer=B2B.Identity
+      - JwtSettings__Audience=B2B.Platform
+      - RabbitMQ__Host=rabbitmq
+      - RabbitMQ__Username=b2b_user
+      - RabbitMQ__Password=b2b_pass
+      - OpenTelemetry__Endpoint=http://jaeger:4317
+      - Seq__Url=http://seq:80
+
+  notification-worker:
+    environment:
+      - DOTNET_ENVIRONMENT=Development
+      - RabbitMQ__Host=rabbitmq
+      - RabbitMQ__Username=b2b_user
+      - RabbitMQ__Password=b2b_pass
+      - Smtp__Host=mailhog
+      - Smtp__Port=1025
+      - Smtp__EnableSsl=false
+      - OpenTelemetry__Endpoint=http://jaeger:4317
+
+  gateway:
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - JwtSettings__SecretKey=B2BPlatformSuperSecretKeyForJWTTokenGeneration2025!
+      - JwtSettings__Issuer=B2B.Identity
+      - JwtSettings__Audience=B2B.Platform
+      - OpenTelemetry__Endpoint=http://jaeger:4317
+      - Seq__Url=http://seq:80

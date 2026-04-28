@@ -1,0 +1,12 @@
+**/.vs
+**/.vscode
+**/.git
+**/.gitignore
+**/bin
+**/obj
+**/*.md
+**/Dockerfile*
+**/docker-compose*
+**/README*
+LICENSE
+.editorconfig

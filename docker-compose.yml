@@ -1,0 +1,277 @@
+name: b2b-microservices
+
+services:
+  # ─────────────────────────────────────────────────────────
+  # API Gateway
+  # ─────────────────────────────────────────────────────────
+  gateway:
+    build:
+      context: .
+      dockerfile: src/Gateway/B2B.Gateway/Dockerfile
+    container_name: b2b-gateway
+    ports:
+      - "5000:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+    depends_on:
+      identity-service:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+      order-service:
+        condition: service_healthy
+    networks:
+      - b2b-network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Identity Service
+  # ─────────────────────────────────────────────────────────
+  identity-service:
+    build:
+      context: .
+      dockerfile: src/Services/Identity/B2B.Identity.Api/Dockerfile
+    container_name: b2b-identity
+    ports:
+      - "5001:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - b2b-network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Product Service
+  # ─────────────────────────────────────────────────────────
+  product-service:
+    build:
+      context: .
+      dockerfile: src/Services/Product/B2B.Product.Api/Dockerfile
+    container_name: b2b-product
+    ports:
+      - "5002:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - b2b-network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Order Service
+  # ─────────────────────────────────────────────────────────
+  order-service:
+    build:
+      context: .
+      dockerfile: src/Services/Order/B2B.Order.Api/Dockerfile
+    container_name: b2b-order
+    ports:
+      - "5003:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - b2b-network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Notification Worker
+  # ─────────────────────────────────────────────────────────
+  notification-worker:
+    build:
+      context: .
+      dockerfile: src/Workers/B2B.Notification.Worker/Dockerfile
+    container_name: b2b-notification
+    environment:
+      - DOTNET_ENVIRONMENT=Development
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+    networks:
+      - b2b-network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Infrastructure: PostgreSQL
+  # ─────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: b2b-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: b2b_user
+      POSTGRES_PASSWORD: b2b_pass
+      POSTGRES_DB: b2b_platform
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U b2b_user -d b2b_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - b2b-network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Infrastructure: Redis
+  # ─────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: b2b-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - b2b-network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Infrastructure: RabbitMQ
+  # ─────────────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: b2b-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"   # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: b2b_user
+      RABBITMQ_DEFAULT_PASS: b2b_pass
+      RABBITMQ_DEFAULT_VHOST: /
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - b2b-network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Observability: Jaeger (Distributed Tracing)
+  # ─────────────────────────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: b2b-jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    networks:
+      - b2b-network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Observability: Seq (Structured Logging)
+  # ─────────────────────────────────────────────────────────
+  seq:
+    image: datalust/seq:2024.3
+    container_name: b2b-seq
+    ports:
+      - "5341:80"
+    environment:
+      ACCEPT_EULA: Y
+    volumes:
+      - seq_data:/data
+    networks:
+      - b2b-network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Dev Tools: MailHog (Email Testing)
+  # ─────────────────────────────────────────────────────────
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: b2b-mailhog
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+    networks:
+      - b2b-network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Dev Tools: pgAdmin
+  # ─────────────────────────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: b2b-pgadmin
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@b2bplatform.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - b2b-network
+    restart: unless-stopped
+
+networks:
+  b2b-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  seq_data:
