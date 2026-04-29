@@ -1,8 +1,15 @@
+using B2B.Shared.Core.Domain;
+
 namespace B2B.Order.Domain.Entities;
 
-public sealed class OrderItem
+/// <summary>
+/// Child entity within the Order aggregate. Inherits identity-based equality
+/// from <see cref="Entity{TId}"/> so two instances with the same Id compare
+/// as equal and produce consistent hash codes — consistent with all other
+/// domain entities in the bounded context.
+/// </summary>
+public sealed class OrderItem : Entity<Guid>
 {
-    public Guid Id { get; private set; }
     public Guid OrderId { get; private set; }
     public Guid ProductId { get; private set; }
     public string ProductName { get; private set; } = default!;

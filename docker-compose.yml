@@ -21,9 +21,29 @@ services:
         condition: service_healthy
       order-service:
         condition: service_healthy
+      basket-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+      shipping-service:
+        condition: service_healthy
+      vendor-service:
+        condition: service_healthy
+      discount-service:
+        condition: service_healthy
+      review-service:
+        condition: service_healthy
     networks:
       - b2b-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
 
   # ─────────────────────────────────────────────────────────
   # Identity Service
@@ -54,6 +74,14 @@ services:
     networks:
       - b2b-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
 
   # ─────────────────────────────────────────────────────────
   # Product Service
@@ -84,6 +112,14 @@ services:
     networks:
       - b2b-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
 
   # ─────────────────────────────────────────────────────────
   # Order Service
@@ -114,6 +150,14 @@ services:
     networks:
       - b2b-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
 
   # ─────────────────────────────────────────────────────────
   # Notification Worker
@@ -133,6 +177,240 @@ services:
     networks:
       - b2b-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+
+  # ─────────────────────────────────────────────────────────
+  # Basket Service (Redis-backed)
+  # ─────────────────────────────────────────────────────────
+  basket-service:
+    build:
+      context: .
+      dockerfile: src/Services/Basket/B2B.Basket.Api/Dockerfile
+    container_name: b2b-basket
+    ports:
+      - "5004:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - b2b-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+  # ─────────────────────────────────────────────────────────
+  # Payment Service
+  # ─────────────────────────────────────────────────────────
+  payment-service:
+    build:
+      context: .
+      dockerfile: src/Services/Payment/B2B.Payment.Api/Dockerfile
+    container_name: b2b-payment
+    ports:
+      - "5005:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - b2b-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+  # ─────────────────────────────────────────────────────────
+  # Shipping Service
+  # ─────────────────────────────────────────────────────────
+  shipping-service:
+    build:
+      context: .
+      dockerfile: src/Services/Shipping/B2B.Shipping.Api/Dockerfile
+    container_name: b2b-shipping
+    ports:
+      - "5006:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - b2b-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+  # ─────────────────────────────────────────────────────────
+  # Vendor Service
+  # ─────────────────────────────────────────────────────────
+  vendor-service:
+    build:
+      context: .
+      dockerfile: src/Services/Vendor/B2B.Vendor.Api/Dockerfile
+    container_name: b2b-vendor
+    ports:
+      - "5007:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - b2b-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+  # ─────────────────────────────────────────────────────────
+  # Discount Service
+  # ─────────────────────────────────────────────────────────
+  discount-service:
+    build:
+      context: .
+      dockerfile: src/Services/Discount/B2B.Discount.Api/Dockerfile
+    container_name: b2b-discount
+    ports:
+      - "5008:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - b2b-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+  # ─────────────────────────────────────────────────────────
+  # Review Service
+  # ─────────────────────────────────────────────────────────
+  review-service:
+    build:
+      context: .
+      dockerfile: src/Services/Review/B2B.Review.Api/Dockerfile
+    container_name: b2b-review
+    ports:
+      - "5011:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - b2b-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
 
   # ─────────────────────────────────────────────────────────
   # Infrastructure: PostgreSQL
@@ -157,6 +435,14 @@ services:
     networks:
       - b2b-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
 
   # ─────────────────────────────────────────────────────────
   # Infrastructure: Redis
@@ -177,12 +463,20 @@ services:
     networks:
       - b2b-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 64M
 
   # ─────────────────────────────────────────────────────────
   # Infrastructure: RabbitMQ
   # ─────────────────────────────────────────────────────────
   rabbitmq:
-    image: rabbitmq:3.13-management-alpine
+    image: masstransit/rabbitmq:latest
     container_name: b2b-rabbitmq
     ports:
       - "5672:5672"
@@ -202,6 +496,14 @@ services:
     networks:
       - b2b-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
 
   # ─────────────────────────────────────────────────────────
   # Observability: Jaeger (Distributed Tracing)

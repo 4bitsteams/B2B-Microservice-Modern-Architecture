@@ -18,6 +18,7 @@ namespace B2B.Shared.Infrastructure.Persistence;
 /// the protected <see cref="Factory"/> to create a context inline.
 /// </summary>
 public abstract class BaseReadRepository<TEntity, TId, TContext>(IDbContextFactory<TContext> factory)
+    : IReadRepository<TEntity, TId>
     where TEntity : class
     where TId : notnull
     where TContext : BaseDbContext

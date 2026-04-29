@@ -74,6 +74,9 @@ builder.Services.AddEventBus(builder.Configuration, x =>
 
     // ── Shipment participants (stub — replace with B2B.Shipping service) ───────
     x.AddConsumer<ShipmentConsumer>();
+
+    // ── Basket checkout → Order creation ──────────────────────────────────────
+    x.AddConsumer<BasketCheckedOutConsumer>();
 },
 configureRabbitMq: cfg =>
 {

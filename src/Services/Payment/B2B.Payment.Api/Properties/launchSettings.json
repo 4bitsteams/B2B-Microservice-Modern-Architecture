@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "B2B.Payment.Api": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:54732;http://localhost:54733"
+    }
+  }
+}

@@ -1,5 +1,32 @@
 namespace B2B.Shared.Core.Messaging;
 
+// ─── Basket Integration Events ───────────────────────────────────────────────
+
+/// <summary>
+/// Published by the Basket service when a customer completes checkout.
+/// Consumed by the Order service to create and confirm an order automatically.
+/// </summary>
+public sealed record BasketCheckedOutIntegration(
+    Guid CustomerId,
+    Guid TenantId,
+    string Street,
+    string City,
+    string State,
+    string PostalCode,
+    string Country,
+    string? Notes,
+    string CustomerEmail,
+    IReadOnlyList<BasketItemIntegration> Items,
+    decimal TotalAmount);
+
+/// <summary>A single line item within a <see cref="BasketCheckedOutIntegration"/> event.</summary>
+public sealed record BasketItemIntegration(
+    Guid ProductId,
+    string ProductName,
+    string Sku,
+    decimal UnitPrice,
+    int Quantity);
+
 // ─── Order Integration Events ────────────────────────────────────────────────
 
 /// <summary>
