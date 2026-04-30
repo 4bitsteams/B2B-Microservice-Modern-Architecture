@@ -1,8 +1,8 @@
 using B2B.Vendor.Application.Interfaces;
-using B2B.Vendor.Domain.Entities;
 using B2B.Shared.Core.Common;
 using B2B.Shared.Core.CQRS;
 using B2B.Shared.Core.Interfaces;
+using VendorEntity = B2B.Vendor.Domain.Entities.Vendor;
 
 namespace B2B.Vendor.Application.Commands.RegisterVendor;
 
@@ -22,7 +22,7 @@ public sealed class RegisterVendorHandler(
         if (taxExists is not null)
             return Error.Conflict("Vendor.TaxIdExists", $"A vendor with Tax ID '{request.TaxId}' already exists.");
 
-        var vendor = Vendor.Register(
+        var vendor = VendorEntity.Register(
             request.CompanyName, request.ContactEmail, request.TaxId,
             request.Address, request.City, request.Country,
             currentUser.TenantId, request.ContactPhone, request.Website, request.Description);

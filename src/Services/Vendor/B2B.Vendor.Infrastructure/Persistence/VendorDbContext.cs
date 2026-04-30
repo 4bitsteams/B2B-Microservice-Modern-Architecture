@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using B2B.Shared.Core.Common;
 using B2B.Shared.Infrastructure.Persistence;
 using VendorEntity = B2B.Vendor.Domain.Entities.Vendor;
 
@@ -16,16 +17,16 @@ public sealed class VendorDbContext(DbContextOptions<VendorDbContext> options)
         modelBuilder.Entity<VendorEntity>(b =>
         {
             b.HasKey(e => e.Id);
-            b.Property(e => e.CompanyName).IsRequired().HasMaxLength(300);
-            b.Property(e => e.ContactEmail).IsRequired().HasMaxLength(256);
+            b.Property(e => e.CompanyName).IsRequired().HasMaxLength(FieldLengths.LongName);
+            b.Property(e => e.ContactEmail).IsRequired().HasMaxLength(FieldLengths.Email);
             b.HasIndex(e => new { e.ContactEmail, e.TenantId }).IsUnique();
-            b.Property(e => e.TaxId).IsRequired().HasMaxLength(50);
+            b.Property(e => e.TaxId).IsRequired().HasMaxLength(FieldLengths.TaxId);
             b.HasIndex(e => new { e.TaxId, e.TenantId }).IsUnique();
-            b.Property(e => e.Address).IsRequired().HasMaxLength(300);
-            b.Property(e => e.City).IsRequired().HasMaxLength(100);
-            b.Property(e => e.Country).IsRequired().HasMaxLength(3);
-            b.Property(e => e.Website).HasMaxLength(500);
-            b.Property(e => e.Description).HasMaxLength(2000);
+            b.Property(e => e.Address).IsRequired().HasMaxLength(FieldLengths.AddressLine);
+            b.Property(e => e.City).IsRequired().HasMaxLength(FieldLengths.City);
+            b.Property(e => e.Country).IsRequired().HasMaxLength(FieldLengths.CountryCode);
+            b.Property(e => e.Website).HasMaxLength(FieldLengths.Url);
+            b.Property(e => e.Description).HasMaxLength(FieldLengths.Description);
             b.Property(e => e.CommissionRate).HasPrecision(5, 2);
             b.HasIndex(e => new { e.TenantId, e.Status });
         });

@@ -4,15 +4,16 @@
 |---|---|
 | Document type | High-Level Design (HLD) |
 | Companion docs | [BRD](BRD.md), [LLD](LLD.md) |
-| Last revised | 2026-04-28 |
+| Last revised | 2026-04-30 |
 
 ---
 
 ## 1. Architectural Style
 
-- **Microservices** with bounded contexts: Identity, Product, Order, Notification.
+- **Microservices** with bounded contexts: Identity, Product, Order, Basket, Payment, Shipping, Vendor, Discount, Review, Notification.
 - **API Gateway** (YARP) as the single public ingress with per-IP rate limiting.
-- **Database-per-service** (PostgreSQL): `b2b_identity`, `b2b_product`, `b2b_order`. Services do not share schemas.
+- **Database-per-service** (PostgreSQL): `b2b_identity`, `b2b_product`, `b2b_order`, `b2b_payment`, `b2b_shipping`, `b2b_vendor`, `b2b_discount`, `b2b_review`. Services do not share schemas.
+- **Basket** is the sole exception — it uses Redis as its only data store (intentionally ephemeral).
 - **Asynchronous integration** via RabbitMQ + MassTransit for cross-service events.
 - **Clean Architecture** within each service: Domain ← Application ← Infrastructure ← API.
 - **CQRS** via MediatR 12 with a full pipeline of 8 behaviors (in registration order):
@@ -28,23 +29,36 @@ flowchart LR
     Buyer[Buyer / Storefront]
     Admin[Tenant Admin Console]
     Partner[Partner API Client]
+    Vendor[Vendor Portal]
   end
 
   Buyer --> GW[YARP Gateway :5000]
   Admin --> GW
   Partner --> GW
+  Vendor --> GW
 
   GW --> Id[Identity :5001]
   GW --> Pr[Product :5002]
   GW --> Or[Order :5003]
+  GW --> Ba[Basket :5004]
+  GW --> Pa[Payment :5005]
+  GW --> Sh[Shipping :5006]
+  GW --> Vn[Vendor :5007]
+  GW --> Ds[Discount :5008]
+  GW --> Rv[Review :5011]
 
   Or -- OrderConfirmed / Saga commands --> RMQ[(RabbitMQ)]
   Pr -- ProductLowStock / StockReserved --> RMQ
   Id -- UserRegistered --> RMQ
+  Ba -- BasketCheckedOut --> RMQ
+  Pa -- PaymentProcessed / Refunded --> RMQ
+  Sh -- ShipmentCreated / Delivered --> RMQ
 
   RMQ --> NW[Notification Worker]
   RMQ --> Saga[OrderFulfillmentSaga]
   Saga -- StockReservationCommand --> Pr
+  Saga -- ProcessPaymentCommand --> Pa
+  Saga -- CreateShipmentCommand --> Sh
   NW --> SMTP[(SMTP / MailHog)]
 ```
 
@@ -56,6 +70,12 @@ flowchart LR
 | Identity | 5001 | `b2b_identity` | Tenants, users, auth, JWT issuance |
 | Product | 5002 | `b2b_product` | Catalog, categories, stock, stock reservation |
 | Order | 5003 | `b2b_order` | Orders, lifecycle, totals, fulfillment saga |
+| Basket | 5004 | Redis only | Ephemeral basket, coupon apply, checkout |
+| Payment | 5005 | `b2b_payment` | Payments, invoices, refunds |
+| Shipping | 5006 | `b2b_shipping` | Shipments, carrier tracking, dispatch, delivery |
+| Vendor | 5007 | `b2b_vendor` | Vendor registry, approval, lifecycle |
+| Discount | 5008 | `b2b_discount` | Discount rules, coupon codes, validation |
+| Review | 5011 | `b2b_review` | Product reviews, moderation |
 | Notification Worker | — | — | Consumes integration events, sends email (9 consumer types) |
 
 ## 4. Logical Architecture (per service)
@@ -78,16 +98,18 @@ flowchart TB
 
 Dependency rule: arrows always point inward. The Domain layer has zero outward dependencies; Infrastructure provides the implementations of Application's port interfaces.
 
+**Basket** follows the same Clean Architecture shape but substitutes EF Core + PostgreSQL with a Redis-backed `IBasketRepository` — the Application layer remains agnostic of the store type.
+
 ## 5. Cross-Cutting Concerns
 
 | Concern | Mechanism | Owner module |
 |---|---|---|
 | Authentication | JWT bearer, validated at the gateway and re-validated at each service | `B2B.Shared.Infrastructure.Extensions.AddJwtAuthentication` |
-| Authorization | Role claims on JWT + `AuthorizationBehavior` pipeline resolving `IAuthorizer<TRequest>` implementations via DI; `[Authorize]` attributes per controller | `AuthorizationBehavior` + `IAuthorizer<>` per command |
+| Authorization | Role claims on JWT + `AuthorizationBehavior` pipeline resolving `IAuthorizer<TRequest>` implementations via DI | `AuthorizationBehavior` + `IAuthorizer<>` per command |
 | Multi-tenancy | `ICurrentUser.TenantId` injected from JWT; manual `Where(x => x.TenantId == ...)` filter on every query | `CurrentUserService` + handlers |
 | Validation | FluentValidation auto-discovered per assembly; runs in `ValidationBehavior` pipeline | `ValidationBehavior` |
 | Idempotency | Marker interface `IIdempotentCommand` + Redis-backed `IdempotencyBehavior` | `IdempotencyBehavior` |
-| Retry | Transient failure retry with exponential back-off in `RetryBehavior`; configurable via `RetryBehaviorOptions` (`IOptions<>`) | `RetryBehavior` |
+| Retry | Transient failure retry with exponential back-off in `RetryBehavior`; configurable via `RetryBehaviorOptions` | `RetryBehavior` |
 | Performance | Warning logged when handler exceeds threshold in `PerformanceBehavior` | `PerformanceBehavior` |
 | Audit | Command metadata written to audit log in `AuditBehavior` | `AuditBehavior` |
 | Logging | Serilog → Console + Seq, request-name + elapsed ms in `LoggingBehavior` | Serilog + `LoggingBehavior` |
@@ -106,6 +128,8 @@ Dependency rule: arrows always point inward. The Domain layer has zero outward d
 | Service → Service (data) | **Not allowed.** Services do not call each other directly | — |
 | Service → Service (events) | Async pub/sub | RabbitMQ exchanges, MassTransit consumers |
 | Order Saga → Product | Async command (StockReservationCommand) | RabbitMQ |
+| Order Saga → Payment | Async command (ProcessPaymentCommand) | RabbitMQ |
+| Order Saga → Shipping | Async command (CreateShipmentCommand) | RabbitMQ |
 | Service → Worker | Async pub/sub | Same RabbitMQ |
 
 The "no direct service-to-service calls" rule enforces autonomy and avoids latency stacking. Cross-service workflows are orchestrated through the saga.
@@ -118,21 +142,35 @@ flowchart LR
     DB1[(b2b_identity)]
     DB2[(b2b_product)]
     DB3[(b2b_order + saga state)]
+    DB4[(b2b_payment)]
+    DB5[(b2b_shipping)]
+    DB6[(b2b_vendor)]
+    DB7[(b2b_discount)]
+    DB8[(b2b_review)]
   end
 
-  Id[Identity Svc] --> DB1
-  Pr[Product Svc] --> DB2
-  Or[Order Svc] --> DB3
-  Cache[(Redis)] --- Id
-  Cache --- Pr
-  Cache --- Or
+  subgraph Redis
+    RCache[(Redis Cache)]
+    RBasket[(Redis Basket)]
+  end
+
+  Id[Identity] --> DB1
+  Pr[Product] --> DB2
+  Or[Order] --> DB3
+  Pa[Payment] --> DB4
+  Sh[Shipping] --> DB5
+  Vn[Vendor] --> DB6
+  Ds[Discount] --> DB7
+  Rv[Review] --> DB8
+  Ba[Basket] --> RBasket
+  Id & Pr & Or & Pa & Sh & Ds --> RCache
 ```
 
 - Each service migrates and owns its own schema.
 - Saga state (`OrderFulfillmentSagaState`) persists in `b2b_order` via EF Core, enabling saga resumption after a crash.
 - No FKs cross databases; cross-aggregate references are by ID only.
-- Read replicas may be added per service when query volume warrants.
-- Redis is shared as a *cache*, not a system of record — keys are namespaced per service (e.g. `products:tenant:{id}:page:{n}`, `idem:{commandType}:{key}`).
+- Basket has **no relational backing store** — Redis is its system of record by design.
+- Redis is shared as a *cache* for other services — keys are namespaced per service (e.g. `products:tenant:{id}:page:{n}`).
 
 ## 8. Tech Stack
 
@@ -163,6 +201,12 @@ flowchart TB
     Id[identity-service :5001]
     Pr[product-service :5002]
     Or[order-service :5003]
+    Ba[basket-service :5004]
+    Pa[payment-service :5005]
+    Sh[shipping-service :5006]
+    Vn[vendor-service :5007]
+    Ds[discount-service :5008]
+    Rv[review-service :5011]
     NW[notification-worker]
     PG[(postgres :5432)]
     R[(redis :6379)]
@@ -173,29 +217,15 @@ flowchart TB
     PGA[pgadmin :5050]
   end
 
-  GW --> Id
-  GW --> Pr
-  GW --> Or
-  Id --> PG
-  Pr --> PG
-  Or --> PG
-  Id --> R
-  Pr --> R
-  Or --> R
-  Id --> RMQ
-  Pr --> RMQ
-  Or --> RMQ
+  GW --> Id & Pr & Or & Ba & Pa & Sh & Vn & Ds & Rv
+  Id & Pr & Or & Pa & Sh & Vn & Ds & Rv --> PG
+  Id & Pr & Or & Ba & Pa & Sh & Ds --> R
+  Id & Pr & Or & Ba & Pa & Sh & Vn & Ds & Rv --> RMQ
   RMQ --> NW
   NW --> MH
-  Id -- traces --> JG
-  Pr -- traces --> JG
-  Or -- traces --> JG
-  Id -- logs --> SQ
-  Pr -- logs --> SQ
-  Or -- logs --> SQ
+  Id & Pr & Or & Pa & Sh & Vn & Ds & Rv -- traces --> JG
+  Id & Pr & Or & Pa & Sh & Vn & Ds & Rv -- logs --> SQ
 ```
-
-Production topology mirrors this but substitutes managed PG, managed Redis, and managed RabbitMQ (e.g. CloudAMQP). Each service runs as N replicas behind the gateway; the worker scales horizontally as competing consumers on the same queues.
 
 ## 10. Scaling Strategy
 
@@ -205,6 +235,7 @@ Production topology mirrors this but substitutes managed PG, managed Redis, and 
 | Write throughput per service | Horizontal scale-out behind gateway; stateless API processes |
 | Worker throughput | Multiple worker replicas as competing RabbitMQ consumers; per-queue prefetch tuned per consumer |
 | Saga concurrency | Optimistic concurrency (`ConcurrencyMode.Optimistic`) on saga state rows; EF retry on conflict |
+| Basket throughput | Redis atomic operations (HSET, HDEL); horizontal Redis cluster when needed |
 | Hot tenant | (Roadmap) per-tenant rate limit at gateway + per-tenant Npgsql pool cap |
 | DB connections | (Roadmap) PgBouncer transaction-pool fronting PG when replica count grows |
 | Event throughput | One queue per integration event; consistent-hash partition key for per-key ordering (roadmap) |
@@ -231,8 +262,6 @@ Production topology mirrors this but substitutes managed PG, managed Redis, and 
 
 Every inbound request gets a W3C trace context that propagates through HTTP and RabbitMQ headers, so a single `traceId` covers Gateway → Order Service → RabbitMQ → Notification Worker → SMTP.
 
-A `CorrelationIdMiddleware` at the gateway stamps every request with an `X-Correlation-ID` header that flows downstream through all services.
-
 ## 13. Reliability Patterns
 
 | Pattern | Status | Detail |
@@ -257,7 +286,11 @@ A `CorrelationIdMiddleware` at the gateway stamps every request with an `X-Corre
 | P1 | Cache stampede protection (single-flight) | 🔲 Pending | Hot-key correctness under load |
 | P1 | Global EF query filter for `TenantId` | 🔲 Pending | Remove manual tenant scoping from handlers |
 | P2 | MassTransit Saga for Order → Inventory → Payment workflow | ✅ Done | Long-running cross-service flow with compensation |
-| P2 | PgBouncer in front of PG | 🔲 Pending | Connection-pool scaling |
+| P2 | Basket → Order checkout integration event | ✅ Done | Full add-to-cart → place-order flow |
+| P2 | Vendor lifecycle (approve, suspend, reactivate) | ✅ Done | Platform-controlled vendor onboarding |
+| P2 | Discount + Coupon engine | ✅ Done | Campaign-driven order value uplift |
+| P2 | Review moderation | ✅ Done | Buyer trust and social proof |
+| P3 | PgBouncer in front of PG | 🔲 Pending | Connection-pool scaling |
 | P3 | OpenTelemetry metrics → Prometheus | 🔲 Pending | Per-service RED metrics dashboard |
 
 ## 15. Architectural Decisions (key ADRs)
@@ -272,3 +305,5 @@ A `CorrelationIdMiddleware` at the gateway stamps every request with an `X-Corre
 | 6 | MassTransit + RabbitMQ rather than a single broker abstraction | Mature .NET ergonomics and Saga support |
 | 7 | MassTransit Saga (orchestration) over choreography for fulfillment | Explicit state machine gives full visibility into long-running flows; compensating logic stays in one place |
 | 8 | Integration event contracts in `B2B.Shared.Core` | Single canonical source shared by all publishers and consumers; avoids coupling consumers to publisher assemblies |
+| 9 | Redis-only for Basket | Basket is intentionally ephemeral; avoiding a relational schema keeps latency low and removes migration overhead |
+| 10 | Type alias convention for namespace-colliding services | `Order`, `Product`, `Vendor` are both namespace names and entity names; aliases prevent `CS0118` at compile time |

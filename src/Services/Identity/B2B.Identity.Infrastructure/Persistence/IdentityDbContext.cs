@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using B2B.Identity.Domain.Entities;
+using B2B.Shared.Core.Common;
 using B2B.Shared.Infrastructure.Persistence;
 
 namespace B2B.Identity.Infrastructure.Persistence;
@@ -20,20 +21,20 @@ public sealed class IdentityDbContext(DbContextOptions<IdentityDbContext> option
         modelBuilder.Entity<Tenant>(b =>
         {
             b.HasKey(e => e.Id);
-            b.Property(e => e.Name).IsRequired().HasMaxLength(200);
-            b.Property(e => e.Slug).IsRequired().HasMaxLength(100);
+            b.Property(e => e.Name).IsRequired().HasMaxLength(FieldLengths.Name);
+            b.Property(e => e.Slug).IsRequired().HasMaxLength(FieldLengths.Slug);
             b.HasIndex(e => e.Slug).IsUnique();
-            b.Property(e => e.Domain).HasMaxLength(255);
+            b.Property(e => e.Domain).HasMaxLength(FieldLengths.Domain);
         });
 
         modelBuilder.Entity<User>(b =>
         {
             b.HasKey(e => e.Id);
-            b.Property(e => e.Email).IsRequired().HasMaxLength(256);
+            b.Property(e => e.Email).IsRequired().HasMaxLength(FieldLengths.Email);
             b.HasIndex(e => new { e.Email, e.TenantId }).IsUnique();
-            b.Property(e => e.FirstName).IsRequired().HasMaxLength(100);
-            b.Property(e => e.LastName).IsRequired().HasMaxLength(100);
-            b.Property(e => e.PasswordHash).IsRequired().HasMaxLength(500);
+            b.Property(e => e.FirstName).IsRequired().HasMaxLength(FieldLengths.ShortName);
+            b.Property(e => e.LastName).IsRequired().HasMaxLength(FieldLengths.ShortName);
+            b.Property(e => e.PasswordHash).IsRequired().HasMaxLength(FieldLengths.PasswordHash);
             b.HasOne(e => e.Tenant).WithMany(t => t.Users).HasForeignKey(e => e.TenantId);
             b.HasMany(e => e.RefreshTokens).WithOne().HasForeignKey(r => r.UserId);
         });
@@ -41,7 +42,7 @@ public sealed class IdentityDbContext(DbContextOptions<IdentityDbContext> option
         modelBuilder.Entity<Role>(b =>
         {
             b.HasKey(e => e.Id);
-            b.Property(e => e.Name).IsRequired().HasMaxLength(100);
+            b.Property(e => e.Name).IsRequired().HasMaxLength(FieldLengths.ShortName);
             b.HasIndex(e => e.Name).IsUnique();
         });
 
@@ -55,7 +56,7 @@ public sealed class IdentityDbContext(DbContextOptions<IdentityDbContext> option
         modelBuilder.Entity<RefreshToken>(b =>
         {
             b.HasKey(e => e.Id);
-            b.Property(e => e.Token).IsRequired().HasMaxLength(500);
+            b.Property(e => e.Token).IsRequired().HasMaxLength(FieldLengths.Token);
             b.HasIndex(e => e.Token);
         });
 

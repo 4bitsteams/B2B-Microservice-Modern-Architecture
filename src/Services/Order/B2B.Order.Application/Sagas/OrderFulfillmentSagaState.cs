@@ -86,14 +86,14 @@ public sealed class OrderFulfillmentSagaState : SagaStateMachineInstance, ISagaV
     // ── Item list (JSONB) ──────────────────────────────────────────────────────
     // EF Core cannot map IReadOnlyList<T> directly; we serialise to a jsonb column.
 
-    private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = false };
+    private static readonly JsonSerializerOptions JsonSerializerOptions = new() { WriteIndented = false };
 
     public string ItemsJson { get; set; } = "[]";
 
     /// <summary>Order items needed for stock reservation, release, and shipment commands.</summary>
     public IReadOnlyList<OrderItemSagaDetail> Items
     {
-        get => JsonSerializer.Deserialize<List<OrderItemSagaDetail>>(ItemsJson, JsonOpts) ?? [];
-        set => ItemsJson = JsonSerializer.Serialize(value, JsonOpts);
+        get => JsonSerializer.Deserialize<List<OrderItemSagaDetail>>(ItemsJson, JsonSerializerOptions) ?? [];
+        set => ItemsJson = JsonSerializer.Serialize(value, JsonSerializerOptions);
     }
 }

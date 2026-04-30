@@ -41,7 +41,7 @@ dotnet run --project src/Services/Product/B2B.Product.Api
 dotnet run --project src/Services/Order/B2B.Order.Api
 dotnet run --project src/Gateway/B2B.Gateway
 
-# 4. Run tests
+# 4. Run all 586 tests
 dotnet test B2B.sln
 ```
 
@@ -50,17 +50,26 @@ After step 1, the following are available locally:
 | URL | Purpose |
 |---|---|
 | http://localhost:5000 | Gateway (your entry point) |
+| http://localhost:5001 | Identity Service (direct debug) |
+| http://localhost:5002 | Product Service (direct debug) |
+| http://localhost:5003 | Order Service (direct debug) |
+| http://localhost:5004 | Basket Service (direct debug) |
+| http://localhost:5005 | Payment Service (direct debug) |
+| http://localhost:5006 | Shipping Service (direct debug) |
+| http://localhost:5007 | Vendor Service (direct debug) |
+| http://localhost:5008 | Discount Service (direct debug) |
+| http://localhost:5011 | Review Service (direct debug) |
 | http://localhost:16686 | Jaeger UI |
 | http://localhost:5341 | Seq logs |
 | http://localhost:8025 | MailHog (catches outgoing email) |
 | http://localhost:5050 | pgAdmin |
-| http://localhost:15672 | RabbitMQ management (guest/guest unless overridden) |
+| http://localhost:15672 | RabbitMQ management |
 
 ## 3. Branching & Commits
 
 - `main` is always green and deployable. No direct pushes.
 - Branch names: `feat/<topic>`, `fix/<topic>`, `chore/<topic>`, `docs/<topic>`.
-- Conventional commits in messages:
+- Conventional commits:
 
   ```
   feat(order): add idempotency to CreateOrder
@@ -77,11 +86,17 @@ After step 1, the following are available locally:
 
 - **Dependency direction.** Domain → nothing. Application → Core. Infrastructure → Application + Core. API → Infrastructure. Never reverse.
 - **No business exceptions.** Return `Result.Failure(Error.X(...))`. Throw only for invariants and unexpected bugs.
-- **Aggregate-only mutation.** Child entities (e.g. `OrderItem`) are mutated through their root only. No child-only repository.
+- **Aggregate-only mutation.** Child entities mutated through their root only. No child-only repository.
 - **Multi-tenancy.** Every query filters on `ICurrentUser.TenantId`. PRs lacking this filter will be blocked.
 - **CQRS purity.** Commands return `Result` / `Result<T>`. Queries return `Result<T>` and have no side-effects.
-- **Type aliases.** Use `using OrderEntity = B2B.Order.Domain.Entities.Order;` etc. in all files under `B2B.Order.*` and `B2B.Product.*`.
-- **MediatR 12.** Pipeline `RequestHandlerDelegate<TResponse>` takes no parameters: `await next();` not `await next(ct);`.
+- **Type aliases.** Use aliases in all files under `B2B.Order.*`, `B2B.Product.*`, and `B2B.Vendor.*`:
+  ```csharp
+  using OrderEntity    = B2B.Order.Domain.Entities.Order;
+  using ProductEntity  = B2B.Product.Domain.Entities.Product;
+  using VendorEntity   = B2B.Vendor.Domain.Entities.Vendor;
+  using VendorStatus   = B2B.Vendor.Domain.Entities.VendorStatus;
+  ```
+- **MediatR 12.** `await next();` — no parameters. `await next(ct);` is a compile error.
 
 ### 4.2 SOLID checklist
 
@@ -98,13 +113,13 @@ After step 1, the following are available locally:
 - `record` for immutable DTOs and value objects.
 - Async ends in `Async` and takes `CancellationToken ct = default` last.
 - One public type per file.
-- No unused `using` directives — let the IDE clean them up.
+- No unused `using` directives.
 
 ### 4.4 Comments
 
-- Comment **why**, not **what**. The code already says what.
-- Don't reference tickets, PRs, or "fixed bug X" in code comments — those belong in commit messages and the PR description.
-- Public types and methods on shared abstractions (`B2B.Shared.Core`) require XML doc comments. Service-specific internal types do not.
+- Comment **why**, not **what**.
+- Don't reference tickets or PRs in code comments — those belong in commit messages.
+- Public types on shared abstractions (`B2B.Shared.Core`) require XML doc comments. Service-specific internal types do not.
 
 ## 5. Adding a Feature — Walkthrough
 
@@ -115,18 +130,16 @@ After step 1, the following are available locally:
    - `CancelOrderCommand.cs` — `ICommand` (or `ICommand<TResponse>`).
    - `CancelOrderHandler.cs` — `ICommandHandler<CancelOrderCommand>`.
    - `CancelOrderValidator.cs` — `AbstractValidator<CancelOrderCommand>` (auto-registered).
-3. **API/Controllers/OrdersController.cs** — add `Cancel(Guid id, [FromBody] CancelOrderRequest)`.
-4. **Authorizer (if resource-based)** — if the operation requires ownership or fine-grained permission checks beyond `[Authorize]`, add `{Name}Authorizer.cs : IAuthorizer<{Name}Command>` in the same folder and register it:
+3. **API/Controllers/OrdersController.cs** — add `Cancel(Guid id, ...)`.
+4. **Authorizer (if resource-based)** — `{Name}Authorizer.cs : IAuthorizer<{Name}Command>`:
    ```csharp
    services.AddScoped<IAuthorizer<CancelOrderCommand>, CancelOrderAuthorizer>();
    ```
-5. **Test** — cover the handler (`{Name}HandlerTests.cs`) for the happy path and each `Error.*` branch, plus the authorizer (`{Name}AuthorizerTests.cs`) for all allowed and denied cases.
-
-If the operation is non-naturally-idempotent (creates money-affecting state), make the command implement `IIdempotentCommand` and read `Idempotency-Key` from the header.
+5. **Test** — `{Name}HandlerTests.cs` (all success/error branches) + `{Name}AuthorizerTests.cs`.
 
 ### 5.2 Add a Query
 
-Same shape but use `IQuery<TResponse>` / `IQueryHandler<,>`. Queries should hit the cache where reasonable:
+Use `IQuery<TResponse>` / `IQueryHandler<,>`. Queries should hit the cache where reasonable:
 
 ```csharp
 return await cache.GetOrCreateAsync(
@@ -160,23 +173,22 @@ public sealed class MyEventConsumer : IConsumer<MyIntegration>
 ```
 
 Then in `Program.cs`:
-
 ```csharp
 busConfig.AddConsumer<MyEventConsumer>();
 ```
 
-Integration event contracts belong in `B2B.Shared.Core/Messaging/IntegrationEvents.cs` so both publishers and consumers reference the same types.
+Integration event contracts belong in `B2B.Shared.Core/Messaging/IntegrationEvents.cs`.
 
 ## 6. Adding a New Microservice
 
-See [LLD §12](docs/LLD.md#12-adding-a-new-microservice-recipe). Summarised checklist:
+See [LLD §12](docs/LLD.md). Summarised checklist:
 
 - [ ] Four projects (`Domain`, `Application`, `Infrastructure`, `Api`)
 - [ ] Reference graph correct (Domain has zero deps)
 - [ ] Standard subfolders present
-- [ ] Type alias if name collides
+- [ ] Type alias if name collides (`Vendor`, `Order`, `Product`)
 - [ ] `AddSharedInfrastructure` + `AddEventBus` wired
-- [ ] YARP route + cluster + health check added
+- [ ] YARP route + cluster + health check added to `B2B.Gateway/appsettings.json`
 - [ ] `docker-compose.yml` + `docker-compose.override.yml` updated
 - [ ] `CREATE DATABASE` line in `infrastructure/postgres/init.sql`
 - [ ] Test project under `tests/` and added to `B2B.sln`
@@ -184,7 +196,7 @@ See [LLD §12](docs/LLD.md#12-adding-a-new-microservice-recipe). Summarised chec
 ## 7. Testing
 
 ```bash
-# Run all tests
+# Run all 586 tests
 dotnet test B2B.sln
 
 # Single project
@@ -192,93 +204,46 @@ dotnet test tests/B2B.Order.Tests/B2B.Order.Tests.csproj
 dotnet test tests/B2B.Product.Tests/B2B.Product.Tests.csproj
 dotnet test tests/B2B.Identity.Tests/B2B.Identity.Tests.csproj
 dotnet test tests/B2B.Shared.Tests/B2B.Shared.Tests.csproj
+dotnet test tests/B2B.Basket.Tests/B2B.Basket.Tests.csproj
+dotnet test tests/B2B.Payment.Tests/B2B.Payment.Tests.csproj
+dotnet test tests/B2B.Shipping.Tests/B2B.Shipping.Tests.csproj
+dotnet test tests/B2B.Discount.Tests/B2B.Discount.Tests.csproj
+dotnet test tests/B2B.Review.Tests/B2B.Review.Tests.csproj
+dotnet test tests/B2B.Vendor.Tests/B2B.Vendor.Tests.csproj
 
 # Single test
-dotnet test --filter "FullyQualifiedName~CreateOrderHandlerTests.Confirms_Order_When_Items_Valid"
+dotnet test --filter "FullyQualifiedName~CreateOrderHandlerTests"
 ```
 
-Current test suite (all in `B2B.sln`):
+### Current test suite (all in `B2B.sln`)
 
 | Project | Tests | Focus |
 |---|---|---|
 | `B2B.Identity.Tests` | 135 | Domain, application handlers (10), validators, token service |
 | `B2B.Product.Tests` | 55 | Domain aggregates, value objects, application handlers, cache behavior |
-| `B2B.Order.Tests` | 65 | Domain aggregates, value objects, application handlers, authorizers |
+| `B2B.Order.Tests` | 69 | Domain aggregates, value objects, application handlers, authorizers |
 | `B2B.Shared.Tests` | 12 | Pipeline behaviors (Validation, Authorization, Idempotency) |
+| `B2B.Basket.Tests` | 52 | Domain (basket, item), application handlers (6), validators |
+| `B2B.Payment.Tests` | 70 | Domain (payment, invoice), application handlers (9), validators |
+| `B2B.Shipping.Tests` | 23 | Domain (shipment states), application handlers (3) |
+| `B2B.Discount.Tests` | 76 | Domain (discount, coupon), application handlers (7), validators |
+| `B2B.Review.Tests` | 35 | Domain (review states), application handlers (6), validators |
+| `B2B.Vendor.Tests` | 59 | Domain (vendor lifecycle), application handlers (7), validators |
+| **Total** | **586** | **0 failures** |
 
-`B2B.Identity.Tests` breakdown:
-
-| File | Tests | Coverage |
-|---|---|---|
-| `Domain/UserTests.cs` | ~14 | Aggregate factory, password, role, state transitions |
-| `Domain/TenantTests.cs` | ~8 | Tenant factory, slug normalization |
-| `Domain/RefreshTokenTests.cs` | ~6 | Token expiry, revocation |
-| `Application/LoginHandlerTests.cs` | ~8 | Success, wrong password, inactive user, not found |
-| `Application/RegisterUserHandlerTests.cs` | ~8 | Success, email conflict, tenant not found |
-| `Application/RefreshTokenHandlerTests.cs` | ~8 | Success, expired, revoked, not found |
-| `Application/ChangePasswordHandlerTests.cs` | 6 | Success, wrong password, user not found, no-save on failure |
-| `Application/UpdateProfileHandlerTests.cs` | 4 | Success, updates fields, persists, not found |
-| `Application/GetUserProfileHandlerTests.cs` | 3 | Returns summary, EmailVerified flag, not found |
-| `Application/GetUsersHandlerTests.cs` | 3 | Returns paged list, maps to DTOs, empty page |
-| `Application/GetUserByIdHandlerTests.cs` | 3 | Found, not found, cross-tenant isolation |
-| `Application/GetTenantsHandlerTests.cs` | 3 | Returns list, maps DTOs, empty |
-| `Application/GetTenantBySlugHandlerTests.cs` | 3 | Found, not found, error code/message |
-| `Application/Validators/LoginValidatorTests.cs` | ~10 | Field-level validation rules |
-| `Application/Validators/RegisterUserValidatorTests.cs` | ~10 | Field-level validation rules |
-| `Infrastructure/TokenServiceTests.cs` | ~16 | JWT generation, claims, refresh token rotation |
-
-`B2B.Product.Tests` breakdown:
-
-| File | Tests | Coverage |
-|---|---|---|
-| `Domain/ProductTests.cs` | ~7 | Aggregate factory, status transitions, stock, domain events |
-| `Domain/MoneyTests.cs` | ~6 | Value object equality, arithmetic, currency validation |
-| `Domain/CategoryTests.cs` | 6 | Factory, slug normalization, parent ID, Update, Activate/Deactivate |
-| `Application/CreateProductHandlerTests.cs` | 6 | Success, persist, category not found, cross-tenant, SKU conflict, concurrent SKU |
-| `Application/UpdateProductHandlerTests.cs` | 5 | Success, updates fields, cache invalidation, not found, cross-tenant |
-| `Application/AdjustStockHandlerTests.cs` | 5 | Increment/decrement, cache invalidation, not found, cross-tenant |
-| `Application/ArchiveProductHandlerTests.cs` | 5 | Success, sets status, persists, not found, cross-tenant |
-| `Application/CreateCategoryHandlerTests.cs` | 4 | Success, persist, name conflict, cross-tenant |
-| `Application/GetProductByIdHandlerTests.cs` | 5 | Cache hit (no DB call), cache miss, not found, cross-tenant, maps DTO |
-| `Application/GetCategoriesHandlerTests.cs` | 3 | Returns paged list, maps DTOs, empty |
-| `Application/GetLowStockProductsHandlerTests.cs` | 3 | Returns list, threshold applied, empty |
-
-`B2B.Order.Tests` breakdown:
-
-| File | Tests | Coverage |
-|---|---|---|
-| `Domain/OrderTests.cs` | 7 | Aggregate invariants, state transitions, totals |
-| `Domain/OrderItemTests.cs` | 6 | Factory, TotalPrice, zero/negative invariants, IncrementQuantity |
-| `Domain/AddressTests.cs` | 7 | Factory, blank-field invariants, value-object equality, ToString |
-| `Application/CreateOrderHandlerTests.cs` | 7 | Happy path, tax rate, item accumulation, persistence |
-| `Application/CancelOrderHandlerTests.cs` | 7 | All status branches, tenant isolation, NotFound / Validation errors |
-| `Application/ConfirmOrderHandlerTests.cs` | 6 | Pending→Confirmed, persists, not found, cross-tenant, already-confirmed validation |
-| `Application/ShipOrderHandlerTests.cs` | 5 | Processing→Shipped, tracking number, persists, not found, wrong-status validation |
-| `Application/DeliverOrderHandlerTests.cs` | 5 | Shipped→Delivered, sets DeliveredAt, persists, not found, wrong-status validation |
-| `Application/GetOrdersHandlerTests.cs` | 4 | Customer scope, admin scope, DTO mapping, status filter |
-| `Application/GetOrderByIdHandlerTests.cs` | 5 | Owner access, TenantAdmin access, not found, cross-tenant, non-owner forbidden |
-| `Application/CancelOrderAuthorizerTests.cs` | 6 | Role-based and ownership-based authorization, cross-tenant pass-through |
-
-`B2B.Shared.Tests` breakdown:
-
-| File | Tests | Coverage |
-|---|---|---|
-| `Behaviors/ValidationBehaviorTests.cs` | 4 | No validators → next, valid → next, invalid → short-circuit, Validation error type |
-| `Behaviors/AuthorizationBehaviorTests.cs` | 4 | No authorizers → next, success → next, fail → short-circuit, Forbidden error type/code |
-| `Behaviors/IdempotencyBehaviorTests.cs` | 4 | Blank key → no cache, first call → caches, duplicate → cached result, failure → not cached |
-
-Targets:
+### Testing targets
 
 - Domain: ≥ 90 % line coverage on aggregates and value objects.
 - Application: every handler has at least one success test and one test per `Error.*` branch it can return.
 - Authorizers: every `IAuthorizer<T>` implementation has tests for all success paths and each failure path.
+- Validators: every `AbstractValidator<T>` implementation has tests for all rules and boundary values.
 - Infrastructure: integration tests with Testcontainers if behavior depends on the real DB or broker.
 
 ## 8. Observability During Development
 
 - **Watching logs in real time:** open Seq at http://localhost:5341.
-- **Tracing a request end-to-end:** open Jaeger at http://localhost:16686, search the service name, find the trace by `traceId` (Serilog logs include it).
-- **Inspecting RabbitMQ queues:** http://localhost:15672 → Queues tab → check message rate, ready/unacked counts.
+- **Tracing a request end-to-end:** open Jaeger at http://localhost:16686.
+- **Inspecting RabbitMQ queues:** http://localhost:15672 → Queues tab.
 - **Reading email:** http://localhost:8025 (MailHog catches everything).
 
 ## 9. Database Migrations
@@ -290,6 +255,8 @@ dotnet ef database update --startup-project ../B2B.Order.Api
 ```
 
 Migrations live under `Persistence/Migrations/`. Squash only with explicit team approval.
+
+**Basket has no migrations** — it is Redis-only.
 
 ## 10. Pull Request Process
 
@@ -305,20 +272,22 @@ Migrations live under `Persistence/Migrations/`. Squash only with explicit team 
 ### Checklist (paste into the PR body)
 
 ```markdown
-- [ ] Tests added/updated and passing locally
+- [ ] Tests added/updated and passing locally (`dotnet test B2B.sln`)
 - [ ] No new business exception thrown — used Result + Error
 - [ ] All queries scoped by TenantId
 - [ ] No direct reference to BCrypt.Net / Npgsql / Redis / MassTransit from Application or Domain
-- [ ] Type alias used in files under namespaces with name collision
+- [ ] Type alias used in files under namespaces with name collision (Order, Product, Vendor)
 - [ ] Authorization logic extracted to `IAuthorizer<TCommand>` (not embedded in handler)
 - [ ] One public type per file
 - [ ] Public API change reflected in the relevant doc (HLD/LLD/BRD)
 - [ ] New test project added to B2B.sln if applicable
+- [ ] New service added to docker-compose.yml and docker-compose.override.yml if applicable
+- [ ] New database added to infrastructure/postgres/init.sql if applicable
 ```
 
 ## 11. Security & Secrets
 
-- **Never** commit secrets. Local defaults in `docker-compose.override.yml` are for local Mailhog/RabbitMQ only.
+- **Never** commit secrets. Local defaults in `docker-compose.override.yml` are for local dev only.
 - Rotate the JWT signing key per environment. The repo default is for local dev only.
 - Report security findings privately to the security team. Do not open a public issue.
 

@@ -69,9 +69,9 @@ public sealed class Discount : AggregateRoot<Guid>, IAuditableEntity
 
         return Type switch
         {
-            DiscountType.Percentage => Math.Round(price * (1 - Value / 100), 2),
+            DiscountType.Percentage  => Math.Round(price * (1 - Value / 100), 2),
             DiscountType.FixedAmount => Math.Max(0, Math.Round(price - Value, 2)),
-            _ => price
+            _ => throw new NotSupportedException($"Discount type '{Type}' is not supported.")
         };
     }
 
@@ -84,4 +84,4 @@ public sealed class Discount : AggregateRoot<Guid>, IAuditableEntity
     public void Activate() => IsActive = true;
 }
 
-public enum DiscountType { Percentage, FixedAmount, BuyXGetY }
+public enum DiscountType { Percentage, FixedAmount }
