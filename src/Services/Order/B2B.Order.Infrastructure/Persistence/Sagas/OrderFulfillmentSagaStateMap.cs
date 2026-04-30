@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
-using B2B.Order.Application.Sagas;
+using B2B.Order.Infrastructure.Sagas;
 
 namespace B2B.Order.Infrastructure.Persistence.Sagas;
 

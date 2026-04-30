@@ -12,6 +12,19 @@ using Serilog;
 using B2B.Shared.Core.Interfaces;
 using B2B.Shared.Infrastructure.Http;
 
+// ── Rate limiter configuration constants ──────────────────────────────────────
+// Tuned for a B2B API: burst-tolerant but bounded to prevent abuse.
+// Fixed window: 100 req / 10 s guards against short bursts.
+// Sliding window: 500 req / 60 s (6 segments) governs sustained throughput.
+const string FixedWindowPolicyName   = "fixed";
+const string SlidingWindowPolicyName = "sliding-per-ip";
+const string AllowAllCorsPolicy      = "AllowAll";
+
+const int  FixedWindowPermitLimit          = 100;
+const int  FixedWindowQueueLimit           = 50;
+const int  SlidingWindowPermitLimit        = 500;
+const int  SlidingWindowSegmentsPerWindow  = 6;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Serilog
@@ -58,16 +71,16 @@ builder.Services.AddScoped<ICorrelationIdProvider, CorrelationIdProvider>();
 builder.Services.AddRateLimiter(opt =>
 {
     // Short burst window — per IP
-    opt.AddFixedWindowLimiter("fixed", limiter =>
+    opt.AddFixedWindowLimiter(FixedWindowPolicyName, limiter =>
     {
         limiter.Window = TimeSpan.FromSeconds(10);
-        limiter.PermitLimit = 100;
-        limiter.QueueLimit = 50;
+        limiter.PermitLimit = FixedWindowPermitLimit;
+        limiter.QueueLimit = FixedWindowQueueLimit;
         limiter.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
     });
 
     // Sustained throughput — partitioned per remote IP (handles proxies via X-Forwarded-For)
-    opt.AddPolicy("sliding-per-ip", httpContext =>
+    opt.AddPolicy(SlidingWindowPolicyName, httpContext =>
     {
         var ip = httpContext.Connection.RemoteIpAddress?.ToString()
                  ?? httpContext.Request.Headers["X-Forwarded-For"].ToString()
@@ -76,8 +89,8 @@ builder.Services.AddRateLimiter(opt =>
         return RateLimitPartition.GetSlidingWindowLimiter(ip, _ => new SlidingWindowRateLimiterOptions
         {
             Window = TimeSpan.FromMinutes(1),
-            PermitLimit = 500,
-            SegmentsPerWindow = 6,
+            PermitLimit = SlidingWindowPermitLimit,
+            SegmentsPerWindow = SlidingWindowSegmentsPerWindow,
             QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
             QueueLimit = 0
         });
@@ -89,7 +102,7 @@ builder.Services.AddRateLimiter(opt =>
 // CORS
 builder.Services.AddCors(opt =>
 {
-    opt.AddPolicy("AllowAll", policy =>
+    opt.AddPolicy(AllowAllCorsPolicy, policy =>
         policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
 });
 
@@ -117,7 +130,7 @@ app.UseSerilogRequestLogging();
 // downstream middleware and YARP transform pipelines.
 app.UseMiddleware<CorrelationIdMiddleware>();
 
-app.UseCors("AllowAll");
+app.UseCors(AllowAllCorsPolicy);
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();

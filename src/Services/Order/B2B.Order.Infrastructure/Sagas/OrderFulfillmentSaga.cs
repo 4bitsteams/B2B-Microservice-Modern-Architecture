@@ -1,12 +1,21 @@
 using MassTransit;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using B2B.Order.Application.Sagas;
 using B2B.Shared.Core.Messaging;
 
-namespace B2B.Order.Application.Sagas;
+namespace B2B.Order.Infrastructure.Sagas;
 
 /// <summary>
 /// MassTransit state machine that orchestrates the complete Order Fulfillment workflow.
+///
+/// DIP
+/// ───
+///   Placed in Infrastructure (not Application) because it inherits
+///   <see cref="MassTransitStateMachine{TInstance}"/> — a concrete framework type.
+///   Business rules (timeouts, workflow steps) are driven by
+///   <see cref="OrderFulfillmentSagaOptions"/>, a plain POCO defined in the
+///   Application layer with no framework coupling.
 ///
 /// ════════════════════════════════════════════════════════════════════════════
 /// STATE DIAGRAM
@@ -44,36 +53,6 @@ namespace B2B.Order.Application.Sagas;
 ///     → ReleaseStockCommand   (compensate stock)
 ///     → publish OrderCancelledDueToShipmentIntegration
 ///     → Finalize
-///
-/// ════════════════════════════════════════════════════════════════════════════
-/// TIMEOUT SCHEDULING
-/// ════════════════════════════════════════════════════════════════════════════
-///
-///   Timeouts use MassTransit's Schedule mechanism backed by the RabbitMQ
-///   delayed-message exchange (requires the rabbitmq_delayed_message_exchange
-///   plugin — see docker-compose.yml).  The Guid? token properties on
-///   OrderFulfillmentSagaState allow MassTransit to cancel a scheduled message
-///   when the expected reply arrives before the deadline.
-///
-///   To use Quartz.NET instead (preferred for high reliability):
-///     x.AddQuartzConsumers();
-///     cfg.UseMessageScheduler(new Uri("queue:quartz"));
-///
-/// ════════════════════════════════════════════════════════════════════════════
-/// CORRELATION
-/// ════════════════════════════════════════════════════════════════════════════
-///
-///   CorrelationId == OrderId for all messages.
-///   HTTP X-Correlation-ID is propagated transparently as a MassTransit header
-///   by MassTransitEventBus — no explicit field is needed in the saga state.
-///
-/// ════════════════════════════════════════════════════════════════════════════
-/// CONCURRENCY
-/// ════════════════════════════════════════════════════════════════════════════
-///
-///   ISagaVersion + EF Core ConcurrencyMode.Optimistic: MassTransit increments
-///   Version on every transition and retries on DbUpdateConcurrencyException,
-///   preventing two concurrent messages from corrupting the same saga instance.
 /// </summary>
 public sealed class OrderFulfillmentSaga
     : MassTransitStateMachine<OrderFulfillmentSagaState>
@@ -119,10 +98,6 @@ public sealed class OrderFulfillmentSaga
         Event(() => ShipmentFailed,         e => e.CorrelateById(m => m.Message.OrderId));
 
         // ── Timeout schedules ────────────────────────────────────────────────────
-        // Delays come from OrderFulfillmentSagaOptions — configurable per environment
-        // without recompiling.  Token stored in saga state allows MassTransit to
-        // cancel a scheduled message when the expected reply arrives before the deadline.
-
         Schedule(() => StockReservationTimeout,
             state => state.StockTimeoutToken,
             s =>
@@ -168,12 +143,10 @@ public sealed class OrderFulfillmentSaga
                         "Requesting stock reservation for {ItemCount} item(s).",
                         ctx.Saga.OrderNumber, ctx.Saga.CorrelationId, ctx.Saga.Items.Count);
                 })
-                // Request stock reservation from Product service
                 .Publish(ctx => new ReserveStockCommand(
                     ctx.Saga.OrderId,
                     ctx.Saga.TenantId,
                     ctx.Saga.Items))
-                // Schedule timeout — fires if Product service never responds
                 .Schedule(StockReservationTimeout,
                     ctx => new StockReservationTimedOut(ctx.Saga.OrderId))
                 .TransitionTo(AwaitingStockReservation));
@@ -183,7 +156,6 @@ public sealed class OrderFulfillmentSaga
         // ════════════════════════════════════════════════════════════════════════
         During(AwaitingStockReservation,
 
-            // ── Happy path: stock reserved → request payment ──────────────────
             When(StockReserved)
                 .Then(ctx =>
                 {
@@ -192,9 +164,7 @@ public sealed class OrderFulfillmentSaga
                         "Stock reserved for Order {OrderNumber}. Requesting payment.",
                         ctx.Saga.OrderNumber);
                 })
-                // Cancel the stock timeout — we got the reply
                 .Unschedule(StockReservationTimeout)
-                // Notify customer that processing has started
                 .Publish(ctx => new OrderProcessingStartedIntegration(
                     ctx.Saga.OrderId,
                     ctx.Saga.OrderNumber,
@@ -202,7 +172,6 @@ public sealed class OrderFulfillmentSaga
                     ctx.Saga.TenantId,
                     ctx.Saga.CustomerEmail,
                     DateTime.UtcNow))
-                // Send payment command to Payment service
                 .Publish(ctx => new ProcessPaymentCommand(
                     ctx.Saga.OrderId,
                     ctx.Saga.TenantId,
@@ -210,23 +179,19 @@ public sealed class OrderFulfillmentSaga
                     ctx.Saga.CustomerEmail,
                     ctx.Saga.OrderNumber,
                     ctx.Saga.TotalAmount))
-                // Schedule payment timeout
                 .Schedule(PaymentTimeout,
                     ctx => new PaymentTimedOut(ctx.Saga.OrderId))
                 .TransitionTo(AwaitingPayment),
 
-            // ── Failure: stock unavailable → cancel ───────────────────────────
             When(StockReservationFailed)
                 .Then(ctx =>
                 {
                     ctx.Saga.FailureReason = ctx.Message.Reason;
                     logger.LogWarning(
-                        "Stock reservation failed for Order {OrderNumber}: {Reason}. " +
-                        "Cancelling order — no compensating actions needed (stock not reserved).",
+                        "Stock reservation failed for Order {OrderNumber}: {Reason}. Cancelling order.",
                         ctx.Saga.OrderNumber, ctx.Message.Reason);
                 })
                 .Unschedule(StockReservationTimeout)
-                // Notify customer
                 .Publish(ctx => new OrderCancelledDueToStockIntegration(
                     ctx.Saga.OrderId,
                     ctx.Saga.OrderNumber,
@@ -237,14 +202,12 @@ public sealed class OrderFulfillmentSaga
                     DateTime.UtcNow))
                 .Finalize(),
 
-            // ── Timeout: Product service did not respond ───────────────────────
             When(StockReservationTimeout.Received)
                 .Then(ctx =>
                 {
                     ctx.Saga.FailureReason = "Stock reservation timed out — no response from Product service.";
                     logger.LogError(
-                        "Stock reservation timeout for Order {OrderNumber} after {Deadline}. " +
-                        "Cancelling order.",
+                        "Stock reservation timeout for Order {OrderNumber} after {Deadline}. Cancelling order.",
                         ctx.Saga.OrderNumber, timeouts.StockReservationDeadline);
                 })
                 .Publish(ctx => new OrderCancelledDueToStockIntegration(
@@ -262,19 +225,16 @@ public sealed class OrderFulfillmentSaga
         // ════════════════════════════════════════════════════════════════════════
         During(AwaitingPayment,
 
-            // ── Happy path: payment succeeded → request shipment ──────────────
             When(PaymentProcessed)
                 .Then(ctx =>
                 {
                     ctx.Saga.PaymentId          = ctx.Message.PaymentId;
                     ctx.Saga.PaymentProcessedAt = ctx.Message.ProcessedAt;
                     logger.LogInformation(
-                        "Payment {PaymentId} processed for Order {OrderNumber}. " +
-                        "Requesting shipment creation.",
+                        "Payment {PaymentId} processed for Order {OrderNumber}. Requesting shipment.",
                         ctx.Message.PaymentId, ctx.Saga.OrderNumber);
                 })
                 .Unschedule(PaymentTimeout)
-                // Notify customer that payment was received
                 .Publish(ctx => new OrderPaymentProcessedIntegration(
                     ctx.Saga.OrderId,
                     ctx.Saga.OrderNumber,
@@ -284,35 +244,29 @@ public sealed class OrderFulfillmentSaga
                     ctx.Saga.PaymentId!.Value,
                     ctx.Saga.TotalAmount,
                     ctx.Saga.PaymentProcessedAt!.Value))
-                // Send shipment creation command to Shipping service
                 .Publish(ctx => new CreateShipmentCommand(
                     ctx.Saga.OrderId,
                     ctx.Saga.TenantId,
                     ctx.Saga.OrderNumber,
                     ctx.Saga.CustomerEmail,
                     ctx.Saga.Items))
-                // Schedule shipment timeout
                 .Schedule(ShipmentTimeout,
                     ctx => new ShipmentTimedOut(ctx.Saga.OrderId))
                 .TransitionTo(AwaitingShipment),
 
-            // ── Failure: payment declined → compensate stock → cancel ─────────
             When(PaymentFailed)
                 .Then(ctx =>
                 {
                     ctx.Saga.FailureReason = ctx.Message.Reason;
                     logger.LogWarning(
-                        "Payment failed for Order {OrderNumber}: {Reason}. " +
-                        "Compensating: releasing reserved stock.",
+                        "Payment failed for Order {OrderNumber}: {Reason}. Compensating: releasing stock.",
                         ctx.Saga.OrderNumber, ctx.Message.Reason);
                 })
                 .Unschedule(PaymentTimeout)
-                // Compensating action 1: release stock
                 .Publish(ctx => new ReleaseStockCommand(
                     ctx.Saga.OrderId,
                     ctx.Saga.TenantId,
                     ctx.Saga.Items))
-                // Notify customer
                 .Publish(ctx => new OrderCancelledDueToPaymentIntegration(
                     ctx.Saga.OrderId,
                     ctx.Saga.OrderNumber,
@@ -323,14 +277,12 @@ public sealed class OrderFulfillmentSaga
                     DateTime.UtcNow))
                 .Finalize(),
 
-            // ── Timeout: Payment service did not respond ───────────────────────
             When(PaymentTimeout.Received)
                 .Then(ctx =>
                 {
                     ctx.Saga.FailureReason = "Payment timed out — no response from Payment service.";
                     logger.LogError(
-                        "Payment timeout for Order {OrderNumber} after {Deadline}. " +
-                        "Compensating: releasing reserved stock.",
+                        "Payment timeout for Order {OrderNumber} after {Deadline}. Compensating: releasing stock.",
                         ctx.Saga.OrderNumber, timeouts.PaymentDeadline);
                 })
                 .Publish(ctx => new ReleaseStockCommand(
@@ -352,7 +304,6 @@ public sealed class OrderFulfillmentSaga
         // ════════════════════════════════════════════════════════════════════════
         During(AwaitingShipment,
 
-            // ── Happy path: shipment created → order fully fulfilled ───────────
             When(ShipmentCreated)
                 .Then(ctx =>
                 {
@@ -361,12 +312,10 @@ public sealed class OrderFulfillmentSaga
                     ctx.Saga.EstimatedDelivery = ctx.Message.EstimatedDelivery;
                     ctx.Saga.ShipmentCreatedAt = DateTime.UtcNow;
                     logger.LogInformation(
-                        "Shipment {ShipmentId} created for Order {OrderNumber}. " +
-                        "Tracking: {TrackingNumber}. Order fulfilled!",
+                        "Shipment {ShipmentId} created for Order {OrderNumber}. Tracking: {TrackingNumber}. Order fulfilled!",
                         ctx.Message.ShipmentId, ctx.Saga.OrderNumber, ctx.Message.TrackingNumber);
                 })
                 .Unschedule(ShipmentTimeout)
-                // Notify customer: order is on the way
                 .Publish(ctx => new OrderFulfilledIntegration(
                     ctx.Saga.OrderId,
                     ctx.Saga.OrderNumber,
@@ -379,30 +328,25 @@ public sealed class OrderFulfillmentSaga
                     DateTime.UtcNow))
                 .Finalize(),
 
-            // ── Failure: carrier rejected → compensate payment + stock → cancel ─
             When(ShipmentFailed)
                 .Then(ctx =>
                 {
                     ctx.Saga.FailureReason = ctx.Message.Reason;
                     logger.LogWarning(
-                        "Shipment failed for Order {OrderNumber}: {Reason}. " +
-                        "Compensating: refunding payment {PaymentId} and releasing stock.",
+                        "Shipment failed for Order {OrderNumber}: {Reason}. Compensating: refunding {PaymentId} and releasing stock.",
                         ctx.Saga.OrderNumber, ctx.Message.Reason, ctx.Saga.PaymentId);
                 })
                 .Unschedule(ShipmentTimeout)
-                // Compensating action 1: refund payment
                 .Publish(ctx => new RefundPaymentCommand(
                     ctx.Saga.OrderId,
                     ctx.Saga.TenantId,
                     ctx.Saga.PaymentId!.Value,
                     ctx.Saga.TotalAmount,
                     ctx.Saga.FailureReason ?? "Shipment failed"))
-                // Compensating action 2: release stock
                 .Publish(ctx => new ReleaseStockCommand(
                     ctx.Saga.OrderId,
                     ctx.Saga.TenantId,
                     ctx.Saga.Items))
-                // Notify customer
                 .Publish(ctx => new OrderCancelledDueToShipmentIntegration(
                     ctx.Saga.OrderId,
                     ctx.Saga.OrderNumber,
@@ -413,24 +357,20 @@ public sealed class OrderFulfillmentSaga
                     DateTime.UtcNow))
                 .Finalize(),
 
-            // ── Timeout: Shipping service did not respond ──────────────────────
             When(ShipmentTimeout.Received)
                 .Then(ctx =>
                 {
                     ctx.Saga.FailureReason = "Shipment timed out — no response from Shipping service.";
                     logger.LogError(
-                        "Shipment timeout for Order {OrderNumber} after {Deadline}. " +
-                        "Compensating: refunding payment {PaymentId} and releasing stock.",
+                        "Shipment timeout for Order {OrderNumber} after {Deadline}. Compensating: refunding {PaymentId} and releasing stock.",
                         ctx.Saga.OrderNumber, timeouts.ShipmentDeadline, ctx.Saga.PaymentId);
                 })
-                // Compensating action 1: refund payment
                 .Publish(ctx => new RefundPaymentCommand(
                     ctx.Saga.OrderId,
                     ctx.Saga.TenantId,
                     ctx.Saga.PaymentId!.Value,
                     ctx.Saga.TotalAmount,
                     ctx.Saga.FailureReason!))
-                // Compensating action 2: release stock
                 .Publish(ctx => new ReleaseStockCommand(
                     ctx.Saga.OrderId,
                     ctx.Saga.TenantId,

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using B2B.Shared.Core.Common;
 using B2B.Shared.Infrastructure.Persistence;
 using ReviewEntity = B2B.Review.Domain.Entities.Review;
 
@@ -16,8 +17,8 @@ public sealed class ReviewDbContext(DbContextOptions<ReviewDbContext> options)
         modelBuilder.Entity<ReviewEntity>(b =>
         {
             b.HasKey(e => e.Id);
-            b.Property(e => e.Title).IsRequired().HasMaxLength(200);
-            b.Property(e => e.Body).IsRequired().HasMaxLength(2000);
+            b.Property(e => e.Title).IsRequired().HasMaxLength(FieldLengths.Name);
+            b.Property(e => e.Body).IsRequired().HasMaxLength(FieldLengths.Description);
             b.HasIndex(e => new { e.CustomerId, e.ProductId }).IsUnique();
             b.HasIndex(e => new { e.ProductId, e.Status });
             b.HasIndex(e => e.TenantId);

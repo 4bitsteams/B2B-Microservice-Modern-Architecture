@@ -4,11 +4,8 @@ using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
 using Serilog;
 using B2B.Order.Application.Commands.CreateOrder;
-using B2B.Order.Application.Sagas;
 using B2B.Order.Infrastructure;
-using B2B.Order.Infrastructure.Messaging;
 using B2B.Order.Infrastructure.Persistence;
-using B2B.Product.Infrastructure.Messaging;
 using B2B.Shared.Infrastructure.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -33,57 +30,19 @@ builder.Services
     .AddSharedInfrastructure(builder.Configuration, "B2B.Order", assemblies)
     .AddOrderInfrastructure(builder.Configuration);
 
-// ── MassTransit: OrderFulfillmentSaga + all saga participant consumers ─────────
+// ── MassTransit: saga + consumers registered via Infrastructure façade ────────
 //
-// Architecture
-// ────────────
-//   • OrderFulfillmentSaga       — EF Core-persisted state machine (saga orchestrator)
-//   • StockReservationConsumer   — Product service consumer (existing, in Product.Infrastructure)
-//   • ReleaseStockConsumer       — Product service consumer (existing, in Product.Infrastructure)
-//   • PaymentConsumer            — Stub payment consumer (replace with B2B.Payment microservice)
-//   • RefundPaymentConsumer      — Stub refund consumer  (replace with B2B.Payment microservice)
-//   • ShipmentConsumer           — Stub shipment consumer (replace with B2B.Shipping microservice)
+// DIP — Program.cs never imports Product.Infrastructure, saga framework types,
+// or individual consumer classes.  All concrete registrations live in
+// DependencyInjection.ConfigureOrderBusParticipants (Infrastructure layer).
 //
-// Timeout scheduling
-// ──────────────────
-//   UseDelayedMessageScheduler() uses the RabbitMQ delayed message exchange plugin.
-//   Enable the plugin in RabbitMQ:
-//     rabbitmq-plugins enable rabbitmq_delayed_message_exchange
-//   Or use the pre-built Docker image (see docker-compose.yml).
-//
-//   For production with higher reliability, replace with Quartz.NET:
-//     x.AddQuartzConsumers();
-//     cfg.UseMessageScheduler(new Uri("queue:quartz"));
-builder.Services.AddEventBus(builder.Configuration, x =>
-{
-    // ── Saga (orchestrator) ────────────────────────────────────────────────────
-    x.AddSagaStateMachine<OrderFulfillmentSaga, OrderFulfillmentSagaState>()
-        .EntityFrameworkRepository(r =>
-        {
-            r.ConcurrencyMode = ConcurrencyMode.Optimistic;
-            r.ExistingDbContext<OrderDbContext>();
-        });
-
-    // ── Stock participants (Product service logic — kept here for single-repo dev) ──
-    x.AddConsumer<StockReservationConsumer>();
-    x.AddConsumer<ReleaseStockConsumer>();
-
-    // ── Payment participants (stub — replace with B2B.Payment service) ─────────
-    x.AddConsumer<PaymentConsumer>();
-    x.AddConsumer<RefundPaymentConsumer>();
-
-    // ── Shipment participants (stub — replace with B2B.Shipping service) ───────
-    x.AddConsumer<ShipmentConsumer>();
-
-    // ── Basket checkout → Order creation ──────────────────────────────────────
-    x.AddConsumer<BasketCheckedOutConsumer>();
-},
-configureRabbitMq: cfg =>
-{
-    // Enables saga timeout scheduling via the RabbitMQ delayed message exchange.
-    // Requires rabbitmq_delayed_message_exchange plugin on the broker.
-    cfg.UseDelayedMessageScheduler();
-});
+// Timeout scheduling uses the RabbitMQ delayed message exchange plugin.
+// For higher reliability in production, replace with Quartz.NET:
+//   x.AddQuartzConsumers();  cfg.UseMessageScheduler(new Uri("queue:quartz"));
+builder.Services.AddEventBus(
+    builder.Configuration,
+    configureConsumers: DependencyInjection.ConfigureOrderBusParticipants,
+    configureRabbitMq:  cfg => cfg.UseDelayedMessageScheduler());
 
 var app = builder.Build();
 

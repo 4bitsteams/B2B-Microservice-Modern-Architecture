@@ -8,6 +8,7 @@
   <ItemGroup>
     <ProjectReference Include="..\B2B.Order.Application\B2B.Order.Application.csproj" />
     <ProjectReference Include="..\..\..\..\src\Shared\B2B.Shared.Infrastructure\B2B.Shared.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\Product\B2B.Product.Infrastructure\B2B.Product.Infrastructure.csproj" />
   </ItemGroup>
 
   <ItemGroup>

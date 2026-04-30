@@ -41,6 +41,10 @@ public sealed record Error(string Code, string Description, ErrorType Type = Err
     /// <summary>Creates a generic <see cref="ErrorType.Failure"/> error. Maps to HTTP 500.</summary>
     public static Error Failure(string code, string description) =>
         new(code, description, ErrorType.Failure);
+
+    /// <summary>Creates a <see cref="ErrorType.ServiceUnavailable"/> error. Maps to HTTP 503.</summary>
+    public static Error ServiceUnavailable(string code, string description) =>
+        new(code, description, ErrorType.ServiceUnavailable);
 }
 
 /// <summary>
@@ -68,5 +72,8 @@ public enum ErrorType
     Unauthorized,
 
     /// <summary>The caller is authenticated but lacks permission. Maps to HTTP 403.</summary>
-    Forbidden
+    Forbidden,
+
+    /// <summary>A downstream service or resource is temporarily unavailable (circuit open, bulkhead full). Maps to HTTP 503.</summary>
+    ServiceUnavailable
 }

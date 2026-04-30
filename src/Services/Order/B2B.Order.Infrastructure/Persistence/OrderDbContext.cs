@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
-using B2B.Order.Application.Sagas;
 using B2B.Order.Infrastructure.Persistence.Sagas;
+using B2B.Order.Infrastructure.Sagas;
 using B2B.Shared.Core.Common;
 using B2B.Shared.Infrastructure.Persistence;
 using OrderEntity = B2B.Order.Domain.Entities.Order;

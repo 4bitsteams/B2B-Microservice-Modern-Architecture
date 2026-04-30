@@ -1,8 +1,9 @@
 using System.Text.Json;
 using MassTransit;
+using B2B.Order.Application.Sagas;
 using B2B.Shared.Core.Messaging;
 
-namespace B2B.Order.Application.Sagas;
+namespace B2B.Order.Infrastructure.Sagas;
 
 /// <summary>
 /// Durable state bag for the <see cref="OrderFulfillmentSaga"/>.
@@ -12,6 +13,14 @@ namespace B2B.Order.Application.Sagas;
 ///   Created  : when OrderConfirmedIntegration arrives (Initial → AwaitingStockReservation)
 ///   Updated  : on every state transition (MassTransit increments Version for optimistic locking)
 ///   Deleted  : when the saga finalises — SetCompletedWhenFinalized removes the row
+///
+/// DIP
+/// ───
+///   Placed in Infrastructure (not Application) because it implements
+///   <see cref="SagaStateMachineInstance"/> and <see cref="ISagaVersion"/> —
+///   both are MassTransit framework types.  Application-layer code that needs
+///   to configure the saga references only <see cref="OrderFulfillmentSagaOptions"/>
+///   (a plain POCO in the Application layer with no framework coupling).
 ///
 /// Concurrency
 /// ───────────
@@ -41,13 +50,13 @@ public sealed class OrderFulfillmentSagaState : SagaStateMachineInstance, ISagaV
 
     // ── Core order data ────────────────────────────────────────────────────────
 
-    public Guid   OrderId       { get; set; }
-    public string OrderNumber   { get; set; } = null!;
-    public Guid   CustomerId    { get; set; }
-    public Guid   TenantId      { get; set; }
-    public string CustomerEmail { get; set; } = string.Empty;
-    public decimal TotalAmount  { get; set; }
-    public DateTime InitiatedAt { get; set; }
+    public Guid    OrderId       { get; set; }
+    public string  OrderNumber   { get; set; } = null!;
+    public Guid    CustomerId    { get; set; }
+    public Guid    TenantId      { get; set; }
+    public string  CustomerEmail { get; set; } = string.Empty;
+    public decimal TotalAmount   { get; set; }
+    public DateTime InitiatedAt  { get; set; }
 
     // ── Stock phase ────────────────────────────────────────────────────────────
 

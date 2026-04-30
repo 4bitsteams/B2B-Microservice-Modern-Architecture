@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Reflection;
 using System.Text;
 using FluentValidation;
@@ -6,10 +7,13 @@ using MediatR;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using StackExchange.Redis;
@@ -27,6 +31,40 @@ namespace B2B.Shared.Infrastructure.Extensions;
 
 public static class ServiceCollectionExtensions
 {
+    // ── Infrastructure constants ───────────────────────────────────────────────
+
+    /// <summary>
+    /// EF Core command timeout in seconds. Raised above the default (30s) to
+    /// accommodate slow migrations and reporting queries; keep below HTTP gateway
+    /// timeout so callers always get a response rather than a silent hang.
+    /// </summary>
+    private const int DbCommandTimeoutSeconds = 30;
+
+    /// <summary>
+    /// Retry intervals (ms) for the MassTransit in-process retry policy.
+    /// Exponential-ish progression: 100 ms → 500 ms → 1 s → 2 s → 5 s.
+    /// Covers transient broker disconnects without flooding a recovering broker.
+    /// </summary>
+    private static readonly int[] MessageBusRetryIntervals = [100, 500, 1_000, 2_000, 5_000];
+
+    /// <summary>Default Redis connection used when no connection string is configured (local dev only).</summary>
+    private const string DefaultRedisConnection = "localhost:6379";
+
+    /// <summary>Default OTLP collector endpoint used when not configured (local dev only).</summary>
+    private const string DefaultOtlpEndpoint = "http://localhost:4317";
+
+    // ── HybridCache constants ──────────────────────────────────────────────────
+
+    /// <summary>Maximum serialized payload size accepted by HybridCache (L1+L2). 1 MB.</summary>
+    private const long HybridCacheMaxPayloadBytes = 1024 * 1024;
+
+    /// <summary>L1 (in-process) cache TTL — short to bound memory growth per replica.</summary>
+    private static readonly TimeSpan HybridCacheL1Expiry = TimeSpan.FromMinutes(2);
+
+    /// <summary>L2 (Redis) cache TTL — matches the existing RedisCacheService default.</summary>
+    private static readonly TimeSpan HybridCacheL2Expiry = TimeSpan.FromMinutes(15);
+
+
     public static IServiceCollection AddSharedInfrastructure(
         this IServiceCollection services,
         IConfiguration config,
@@ -37,10 +75,36 @@ public static class ServiceCollectionExtensions
             .AddMediatRWithBehaviors(assemblies, config)
             .AddValidators(assemblies)
             .AddRedisCache(config)
+            .AddServiceHybridCache()
+            .AddResponseCompression(opt =>
+            {
+                // Brotli first (better ratio); gzip as fallback for older clients.
+                // EnableForHttps: safe here because we control all TLS termination at
+                // the YARP Gateway — internal traffic can compress freely.
+                opt.EnableForHttps = true;
+                opt.Providers.Add<BrotliCompressionProvider>();
+                opt.Providers.Add<GzipCompressionProvider>();
+                opt.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(
+                [
+                    "application/json",
+                    "application/problem+json"
+                ]);
+            })
+            .AddOutputCache(opt =>
+            {
+                // Base policy: short TTL for safety; endpoints opt-in via [OutputCache].
+                opt.AddBasePolicy(policy => policy.Expire(TimeSpan.FromSeconds(10)));
+
+                // "queries" policy: used by GET endpoints returning stable read-model data.
+                opt.AddPolicy("queries", policy => policy
+                    .Expire(TimeSpan.FromSeconds(30))
+                    .SetVaryByQuery("page", "pageSize", "tenantId")
+                    .Tag("queries"));
+            })
             .AddJwtAuthentication(config)
             .AddCurrentUser()
             .AddCorrelationId()
-            .AddOpenTelemetry(config, serviceName)
+            .AddServiceOpenTelemetry(config, serviceName)
             .AddDefaultHealthChecks(config)
             .AddDistributedLock()
             .AddPlatformServices(config)
@@ -69,6 +133,10 @@ public static class ServiceCollectionExtensions
             services.Configure<RetryBehaviorOptions>(config.GetSection(RetryBehaviorOptions.SectionName));
         else
             services.Configure<RetryBehaviorOptions>(_ => { }); // use class defaults
+
+        // Singleton bulkhead provider — one SemaphoreSlim per command type, shared
+        // across all ResilienceBehavior instances for the same TRequest.
+        services.AddSingleton<CommandBulkheadProvider>();
 
         services.AddMediatR(cfg =>
         {
@@ -142,7 +210,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddRedisCache(
         this IServiceCollection services, IConfiguration config)
     {
-        var redisConnection = config.GetConnectionString("Redis") ?? "localhost:6379";
+        var redisConnection = config.GetConnectionString("Redis") ?? DefaultRedisConnection;
 
         // Register IConnectionMultiplexer as singleton for RemoveByPrefixAsync (SCAN + DEL)
         // and for any distributed-lock use cases.
@@ -217,7 +285,7 @@ public static class ServiceCollectionExtensions
                     h.Password(rabbitMq["Password"] ?? "guest");
                 });
 
-                cfg.UseMessageRetry(r => r.Intervals(100, 500, 1000, 2000, 5000));
+                cfg.UseMessageRetry(r => r.Intervals(MessageBusRetryIntervals));
                 cfg.UseInMemoryOutbox(ctx);
 
                 // Apply caller-supplied transport configuration (e.g. delayed scheduler)
@@ -231,20 +299,50 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    public static IServiceCollection AddOpenTelemetry(
+    /// <summary>
+    /// Registers HybridCache (L1 in-process + L2 Redis) for use alongside
+    /// <see cref="ICacheService"/>. Inject <c>HybridCache</c> directly in query
+    /// handlers for automatic stampede protection, local memory caching, and
+    /// Redis L2 fallback — all without manual SemaphoreSlim wiring.
+    /// </summary>
+    public static IServiceCollection AddServiceHybridCache(this IServiceCollection services)
+    {
+        services.AddHybridCache(opt =>
+        {
+            opt.MaximumPayloadBytes = HybridCacheMaxPayloadBytes;
+            opt.DefaultEntryOptions = new HybridCacheEntryOptions
+            {
+                Expiration = HybridCacheL2Expiry,
+                LocalCacheExpiration = HybridCacheL1Expiry
+            };
+        });
+        return services;
+    }
+
+    /// <summary>
+    /// Registers OpenTelemetry traces <b>and</b> metrics exported via OTLP.
+    ///
+    /// Traces: ASP.NET Core + HttpClient + EF Core → Jaeger / OTLP collector.
+    /// Metrics: ASP.NET Core + HttpClient + .NET Runtime → OTLP collector
+    ///          (collector can scrape or forward to Prometheus/Grafana).
+    /// </summary>
+    public static IServiceCollection AddServiceOpenTelemetry(
         this IServiceCollection services, IConfiguration config, string serviceName)
     {
-        var otlpEndpoint = config["OpenTelemetry:Endpoint"] ?? "http://localhost:4317";
+        var otlpEndpoint = config["OpenTelemetry:Endpoint"] ?? DefaultOtlpEndpoint;
 
         services.AddOpenTelemetry()
             .ConfigureResource(r => r.AddService(serviceName))
-            .WithTracing(tracing =>
-            {
-                tracing
-                    .AddAspNetCoreInstrumentation()
-                    .AddHttpClientInstrumentation()
-                    .AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
-            });
+            .WithTracing(tracing => tracing
+                .AddAspNetCoreInstrumentation()
+                .AddHttpClientInstrumentation()
+                .AddEntityFrameworkCoreInstrumentation()
+                .AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint)))
+            .WithMetrics(metrics => metrics
+                .AddAspNetCoreInstrumentation()
+                .AddHttpClientInstrumentation()
+                .AddRuntimeInstrumentation()
+                .AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint)));
 
         return services;
     }
@@ -298,7 +396,7 @@ public static class ServiceCollectionExtensions
             opt.UseNpgsql(connStr, npg =>
             {
                 npg.EnableRetryOnFailure(3);
-                npg.CommandTimeout(30);
+                npg.CommandTimeout(DbCommandTimeoutSeconds);
                 npg.MinBatchSize(1);
             })
             .EnableDetailedErrors(false)
@@ -345,7 +443,7 @@ public static class ServiceCollectionExtensions
             opt.UseNpgsql(readConnStr, npg =>
             {
                 npg.EnableRetryOnFailure(3);
-                npg.CommandTimeout(30);
+                npg.CommandTimeout(DbCommandTimeoutSeconds);
                 npg.MinBatchSize(1);
             })
             .UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking)
@@ -361,7 +459,7 @@ public static class ServiceCollectionExtensions
             opt.UseNpgsql(writeConnStr, npg =>
             {
                 npg.EnableRetryOnFailure(3);
-                npg.CommandTimeout(30);
+                npg.CommandTimeout(DbCommandTimeoutSeconds);
                 npg.MinBatchSize(1);
             })
             .EnableDetailedErrors(false)

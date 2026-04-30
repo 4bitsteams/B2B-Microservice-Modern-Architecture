@@ -18,26 +18,48 @@ public sealed class RedisCacheService(
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
+    // ── Stampede-guard constants ───────────────────────────────────────────────
+
+    /// <summary>
+    /// Maximum number of distinct cache keys whose semaphores can be held in memory
+    /// at once. Caps memory under high key-cardinality workloads (many tenants × many
+    /// pages). Each semaphore entry costs ~64 bytes; 10 000 entries ≈ 640 KB.
+    /// </summary>
+    private const int SemaphoreCacheSizeLimit = 10_000;
+
+    /// <summary>
+    /// Sliding window after which an idle semaphore is evicted from the MemoryCache.
+    /// A key that hasn't been requested for this long no longer needs stampede protection.
+    /// </summary>
+    private static readonly TimeSpan SemaphoreIdleEvictionWindow = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Default cache TTL applied when the caller does not specify an expiry.
+    /// Keeps read-heavy pages fresh without forcing explicit TTL on every call site.
+    /// </summary>
+    private static readonly TimeSpan DefaultCacheExpiry = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// Redis SCAN page size. Larger pages reduce round-trips; 250 is a safe default
+    /// that avoids blocking the server for too long on large key spaces.
+    /// </summary>
+    private const int RedisScanPageSize = 250;
+
     // Per-key semaphores prevent cache stampede (thundering herd) on cache miss.
     // Multiple concurrent requests for the same key queue behind the first caller;
     // subsequent requests hit the now-populated cache.
-    //
-    // MemoryCache with sliding expiration auto-evicts semaphores that haven't been
-    // accessed for 5 minutes, preventing unbounded growth when key cardinality is
-    // high (e.g. many tenants × many pages × many search terms).
-    // SizeLimit caps memory to 10 000 concurrent in-flight distinct keys.
     //
     // NOTE: This guards within a single process. For full multi-replica stampede
     // protection a Redis-based distributed lock (Redlock) would be needed.
     private readonly IMemoryCache _semaphoreCache = new MemoryCache(new MemoryCacheOptions
     {
-        SizeLimit = 10_000
+        SizeLimit = SemaphoreCacheSizeLimit
     });
 
     private SemaphoreSlim GetSemaphore(string key) =>
         _semaphoreCache.GetOrCreate(key, entry =>
         {
-            entry.SlidingExpiration = TimeSpan.FromMinutes(5);
+            entry.SlidingExpiration = SemaphoreIdleEvictionWindow;
             entry.Size = 1;
             return new SemaphoreSlim(1, 1);
         })!;
@@ -64,7 +86,7 @@ public sealed class RedisCacheService(
         {
             var options = new DistributedCacheEntryOptions
             {
-                AbsoluteExpirationRelativeToNow = expiry ?? TimeSpan.FromMinutes(15)
+                AbsoluteExpirationRelativeToNow = expiry ?? DefaultCacheExpiry
             };
             var data = JsonSerializer.Serialize(value, JsonOptions);
             await cache.SetStringAsync(key, data, options, ct);
@@ -90,7 +112,7 @@ public sealed class RedisCacheService(
             {
                 var server = multiplexer.GetServer(endpoint);
                 // SCAN is non-blocking; preferred over KEYS in production.
-                var keys = server.Keys(pattern: $"{prefix}*", pageSize: 250).ToArray();
+                var keys = server.Keys(pattern: $"{prefix}*", pageSize: RedisScanPageSize).ToArray();
                 if (keys.Length > 0)
                     await db.KeyDeleteAsync(keys);
             }

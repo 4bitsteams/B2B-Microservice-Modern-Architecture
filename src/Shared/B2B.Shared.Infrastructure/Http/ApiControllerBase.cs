@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using B2B.Shared.Core.Common;
 
@@ -20,11 +21,12 @@ public abstract class ApiControllerBase : ControllerBase
 {
     protected IActionResult Problem(Error error) => error.Type switch
     {
-        ErrorType.NotFound     => NotFound(new ProblemDetails     { Title = "Not Found",            Detail = error.Description, Status = 404 }),
-        ErrorType.Validation   => BadRequest(new ProblemDetails   { Title = "Validation Error",     Detail = error.Description, Status = 400 }),
-        ErrorType.Conflict     => Conflict(new ProblemDetails     { Title = "Conflict",             Detail = error.Description, Status = 409 }),
-        ErrorType.Unauthorized => Unauthorized(new ProblemDetails { Title = "Unauthorized",         Detail = error.Description, Status = 401 }),
-        ErrorType.Forbidden    => StatusCode(403, new ProblemDetails { Title = "Forbidden",         Detail = error.Description, Status = 403 }),
-        _                      => StatusCode(500, new ProblemDetails { Title = "Internal Server Error", Detail = error.Description, Status = 500 })
+        ErrorType.NotFound     => NotFound(new ProblemDetails     { Title = "Not Found",             Detail = error.Description }),
+        ErrorType.Validation   => BadRequest(new ProblemDetails   { Title = "Validation Error",      Detail = error.Description }),
+        ErrorType.Conflict     => Conflict(new ProblemDetails     { Title = "Conflict",              Detail = error.Description }),
+        ErrorType.Unauthorized => Unauthorized(new ProblemDetails { Title = "Unauthorized",          Detail = error.Description }),
+        ErrorType.Forbidden          => StatusCode(StatusCodes.Status403Forbidden,            new ProblemDetails { Title = "Forbidden",             Detail = error.Description }),
+        ErrorType.ServiceUnavailable => StatusCode(StatusCodes.Status503ServiceUnavailable,   new ProblemDetails { Title = "Service Unavailable",   Detail = error.Description }),
+        _                            => StatusCode(StatusCodes.Status500InternalServerError,   new ProblemDetails { Title = "Internal Server Error", Detail = error.Description })
     };
 }

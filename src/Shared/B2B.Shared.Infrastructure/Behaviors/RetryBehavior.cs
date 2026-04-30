@@ -2,48 +2,100 @@ using MediatR;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Polly;
+using Polly.CircuitBreaker;
 using Polly.Retry;
+using B2B.Shared.Core.Common;
 using B2B.Shared.Core.CQRS;
 
 namespace B2B.Shared.Infrastructure.Behaviors;
 
 /// <summary>
-/// MediatR pipeline behavior that automatically retries transient failures.
+/// MediatR pipeline behavior that applies a two-layer Polly 8 resilience pipeline
+/// plus a bulkhead guard to all <see cref="ICommand"/> / <see cref="ICommand{TResponse}"/>
+/// requests.
 ///
-/// Targets only commands (<see cref="ICommand"/> / <see cref="ICommand{TResponse}"/>)
-/// because queries are idempotent by nature and callers can retry safely on their own.
+/// Execution order (outermost → innermost):
 ///
-/// Retry strategy (exponential back-off with optional jitter) — configurable via
-/// <see cref="RetryBehaviorOptions"/> (bound from appsettings <c>"RetryBehavior"</c> section):
-///   Attempt 1 → immediate
-///   Attempt 2 → ~InitialDelayMs
-///   Attempt 3 → ~InitialDelayMs × 2
-///   Attempt 4 → ~InitialDelayMs × 4  (default: max 3 retries = 4 total attempts)
+///   1. Bulkhead — per-handler <see cref="SemaphoreSlim"/> caps concurrent writes.
+///      Saturated calls are rejected immediately so callers get a fast 503 rather
+///      than queuing indefinitely behind a slow downstream.
 ///
-/// Transient exceptions targeted:
-///   - Npgsql/EF Core transient connection failures
-///   - Redis StackExchange transient failures
-///   - General I/O and timeout exceptions
+///   2. Circuit Breaker — tracks rolling failure ratio. When it exceeds the threshold
+///      the circuit opens and all commands fail fast for <c>BreakDuration</c> seconds.
+///
+///   3. Retry — exponential back-off + jitter for transient faults (I/O, timeouts).
+///      Runs only when the circuit is closed.
+///
+/// Configuration: <see cref="RetryBehaviorOptions"/> bound from <c>"RetryBehavior"</c>
+/// in appsettings. All fields are optional with production-safe defaults.
 /// </summary>
 public sealed class RetryBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
     where TRequest : notnull
 {
-    // Static per closed generic type — computed once by the JIT, shared across all
-    // instances of RetryBehavior<TRequest, TResponse> for the same TRequest type.
+    // Computed once per closed generic type — no per-request allocation.
     private static readonly bool IsCommand = typeof(TRequest).GetInterfaces()
         .Any(i => i == typeof(ICommand) ||
                   (i.IsGenericType && i.GetGenericTypeDefinition() == typeof(ICommand<>)));
 
     private readonly ResiliencePipeline<TResponse> _pipeline;
+    private readonly ILogger<RetryBehavior<TRequest, TResponse>> _logger;
+    private readonly SemaphoreSlim _bulkhead;
+    private readonly int _bulkheadMaxConcurrency;
 
     public RetryBehavior(
         ILogger<RetryBehavior<TRequest, TResponse>> logger,
-        IOptions<RetryBehaviorOptions> options)
+        IOptions<RetryBehaviorOptions> options,
+        CommandBulkheadProvider bulkheadProvider)
     {
+        _logger = logger;
         var opts = options.Value;
+        _bulkhead = bulkheadProvider.GetOrCreate<TRequest>(opts.BulkheadMaxConcurrency);
+        _bulkheadMaxConcurrency = opts.BulkheadMaxConcurrency;
         var maxAttempts = opts.MaxRetryAttempts;
 
         _pipeline = new ResiliencePipelineBuilder<TResponse>()
+
+            // ── Circuit Breaker ──────────────────────────────────────────────────
+            // Opens when FailureRatio% of the last MinimumThroughput calls fail within
+            // SamplingDuration. Stays open for BreakDuration before half-open probe.
+            .AddCircuitBreaker(new CircuitBreakerStrategyOptions<TResponse>
+            {
+                FailureRatio = opts.CircuitBreakerFailureRatio,
+                MinimumThroughput = opts.CircuitBreakerMinimumThroughput,
+                SamplingDuration = TimeSpan.FromSeconds(opts.CircuitBreakerSamplingDurationSeconds),
+                BreakDuration = TimeSpan.FromSeconds(opts.CircuitBreakerBreakDurationSeconds),
+                ShouldHandle = new PredicateBuilder<TResponse>()
+                    .Handle<IOException>()
+                    .Handle<TimeoutException>()
+                    .Handle<InvalidOperationException>(ex =>
+                        ex.Message.Contains("connection", StringComparison.OrdinalIgnoreCase) ||
+                        ex.Message.Contains("timeout",    StringComparison.OrdinalIgnoreCase)),
+                OnOpened = args =>
+                {
+                    logger.LogError(args.Outcome.Exception,
+                        "Circuit breaker OPEN for {Request} — failing fast for {Duration}s",
+                        typeof(TRequest).Name, opts.CircuitBreakerBreakDurationSeconds);
+                    return ValueTask.CompletedTask;
+                },
+                OnClosed = _ =>
+                {
+                    logger.LogInformation(
+                        "Circuit breaker CLOSED for {Request} — normal operation resumed",
+                        typeof(TRequest).Name);
+                    return ValueTask.CompletedTask;
+                },
+                OnHalfOpened = _ =>
+                {
+                    logger.LogInformation(
+                        "Circuit breaker HALF-OPEN for {Request} — probing downstream",
+                        typeof(TRequest).Name);
+                    return ValueTask.CompletedTask;
+                }
+            })
+
+            // ── Retry ────────────────────────────────────────────────────────────
+            // Retries transient faults up to MaxRetryAttempts with exponential
+            // back-off + jitter. Runs only when the circuit is closed.
             .AddRetry(new RetryStrategyOptions<TResponse>
             {
                 MaxRetryAttempts = opts.MaxRetryAttempts,
@@ -51,16 +103,16 @@ public sealed class RetryBehavior<TRequest, TResponse> : IPipelineBehavior<TRequ
                 UseJitter = opts.UseJitter,
                 Delay = TimeSpan.FromMilliseconds(opts.InitialDelayMs),
                 ShouldHandle = new PredicateBuilder<TResponse>()
+                    .Handle<IOException>()
+                    .Handle<TimeoutException>()
                     .Handle<InvalidOperationException>(ex =>
                         ex.Message.Contains("connection", StringComparison.OrdinalIgnoreCase) ||
-                        ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase))
-                    .Handle<IOException>()
-                    .Handle<TimeoutException>(),
+                        ex.Message.Contains("timeout",    StringComparison.OrdinalIgnoreCase)),
                 OnRetry = args =>
                 {
                     logger.LogWarning(
                         args.Outcome.Exception,
-                        "Transient failure in {Request} — attempt {Attempt} of {Max}",
+                        "Transient failure in {Request} — attempt {Attempt} of {Max}. Retrying…",
                         typeof(TRequest).Name, args.AttemptNumber + 1, maxAttempts);
                     return ValueTask.CompletedTask;
                 }
@@ -75,6 +127,40 @@ public sealed class RetryBehavior<TRequest, TResponse> : IPipelineBehavior<TRequ
     {
         if (!IsCommand) return await next();
 
-        return await _pipeline.ExecuteAsync(async _ => await next(), cancellationToken);
+        // ── Bulkhead guard ───────────────────────────────────────────────────────
+        // WaitAsync(0) = non-blocking check — reject immediately if saturated.
+        if (!await _bulkhead.WaitAsync(0, cancellationToken))
+        {
+            _logger.LogWarning(
+                "Bulkhead saturated for {Request} — max concurrency {Max} reached",
+                typeof(TRequest).Name, _bulkheadMaxConcurrency);
+
+            if (typeof(TResponse).IsAssignableTo(typeof(Result)))
+                return (TResponse)ResultHelper.Failure(typeof(TResponse),
+                    Error.ServiceUnavailable("Bulkhead.Full",
+                        "Server is currently handling too many requests. Please retry shortly."));
+            throw new InvalidOperationException(
+                $"Bulkhead saturated — max {_bulkheadMaxConcurrency} concurrent {typeof(TRequest).Name} commands.");
+        }
+
+        try
+        {
+            return await _pipeline.ExecuteAsync(async _ => await next(), cancellationToken);
+        }
+        catch (BrokenCircuitException ex)
+        {
+            _logger.LogError(ex, "Circuit open — {Request} rejected (service unavailable)",
+                typeof(TRequest).Name);
+
+            if (typeof(TResponse).IsAssignableTo(typeof(Result)))
+                return (TResponse)ResultHelper.Failure(typeof(TResponse),
+                    Error.ServiceUnavailable("CircuitBreaker.Open",
+                        $"Service temporarily unavailable. '{typeof(TRequest).Name}' rejected while circuit is open."));
+            throw;
+        }
+        finally
+        {
+            _bulkhead.Release();
+        }
     }
 }
