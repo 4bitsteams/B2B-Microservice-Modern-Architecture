@@ -256,43 +256,48 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers MassTransit with RabbitMQ, the in-memory outbox, and standard retry intervals.
+    /// Registers MassTransit with an in-memory base bus for sagas and co-located consumers,
+    /// plus an optional Apache Kafka Rider for cross-service integration event delivery.
     /// </summary>
     /// <param name="configureConsumers">
-    ///   Register consumers, sagas, and other bus participants
-    ///   (e.g. <c>x.AddConsumer&lt;MyConsumer&gt;()</c>).
+    ///   Register sagas, co-located consumers, and other in-memory bus participants
+    ///   (e.g. <c>x.AddSagaStateMachine&lt;…&gt;()</c>, <c>x.AddConsumer&lt;…&gt;()</c>).
+    ///   Saga timeout scheduling is handled automatically via <c>UseInMemoryScheduler</c>.
     /// </param>
-    /// <param name="configureRabbitMq">
-    ///   Optional additional RabbitMQ transport configuration applied after the
-    ///   default host/retry/outbox setup — use this to add service-specific
-    ///   middleware such as <c>cfg.UseDelayedMessageScheduler()</c> for saga timeouts.
+    /// <param name="configureRider">
+    ///   Optional Kafka Rider configuration for cross-service messaging.
+    ///   Register producers with <c>rider.AddProducer&lt;T&gt;(topic)</c> and consumers
+    ///   with <c>rider.AddConsumer&lt;T&gt;()</c>, then call <c>rider.UsingKafka(…)</c>
+    ///   to configure the host and topic endpoints. When omitted, <see cref="IEventBus"/>
+    ///   falls back to in-memory <c>IBus.Publish</c> (same-process only).
     /// </param>
     public static IServiceCollection AddEventBus(
         this IServiceCollection services, IConfiguration config,
         Action<IBusRegistrationConfigurator>? configureConsumers = null,
-        Action<MassTransit.IRabbitMqBusFactoryConfigurator>? configureRabbitMq = null)
+        Action<IRiderRegistrationConfigurator>? configureRider = null)
     {
         services.AddMassTransit(x =>
         {
+            // Register sagas, co-located stubs, and in-process consumers.
             configureConsumers?.Invoke(x);
 
-            x.UsingRabbitMq((ctx, cfg) =>
+            // In-memory transport — handles saga state machine scheduling and
+            // co-located consumer communication without any external broker dependency.
+            // The in-memory bus supports scheduled/delayed messages natively, replacing
+            // the RabbitMQ delayed message exchange plugin for saga timeouts.
+            // For production multi-node deployments, switch to Quartz.NET:
+            //   x.AddQuartzConsumers(); cfg.UseMessageScheduler(new Uri("queue:quartz"));
+            x.UsingInMemory((ctx, cfg) =>
             {
-                var rabbitMq = config.GetSection("RabbitMQ");
-                cfg.Host(rabbitMq["Host"] ?? "localhost", rabbitMq["VirtualHost"] ?? "/", h =>
-                {
-                    h.Username(rabbitMq["Username"] ?? "guest");
-                    h.Password(rabbitMq["Password"] ?? "guest");
-                });
-
-                cfg.UseMessageRetry(r => r.Intervals(MessageBusRetryIntervals));
-                cfg.UseInMemoryOutbox(ctx);
-
-                // Apply caller-supplied transport configuration (e.g. delayed scheduler)
-                configureRabbitMq?.Invoke(cfg);
-
                 cfg.ConfigureEndpoints(ctx);
             });
+
+            // Kafka Rider — cross-service integration events (optional per service).
+            // Services that only do in-process communication can omit configureRider.
+            if (configureRider is not null)
+            {
+                x.AddRider(rider => configureRider(rider));
+            }
         });
 
         services.AddScoped<IEventBus, MassTransitEventBus>();
@@ -347,6 +352,12 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    /// <summary>
+    /// Registers health checks for PostgreSQL and Redis.
+    /// Each check is tagged so readiness/liveness probes can filter independently.
+    /// Kafka connectivity is validated at startup by MassTransit's Rider host;
+    /// a custom <c>IHealthCheck</c> implementation can be added per service if needed.
+    /// </summary>
     public static IServiceCollection AddDefaultHealthChecks(
         this IServiceCollection services, IConfiguration config)
     {
@@ -354,22 +365,42 @@ public static class ServiceCollectionExtensions
 
         var pg = config.GetConnectionString("DefaultConnection");
         if (!string.IsNullOrEmpty(pg))
-            hcBuilder.AddNpgSql(pg, tags: ["db"]);
+            hcBuilder.AddNpgSql(pg, tags: ["db", "ready"]);
 
         var redis = config.GetConnectionString("Redis");
         if (!string.IsNullOrEmpty(redis))
-            hcBuilder.AddRedis(redis, tags: ["cache"]);
+            hcBuilder.AddRedis(redis, tags: ["cache", "ready"]);
 
         return services;
     }
 
     public static WebApplication UseSharedMiddleware(this WebApplication app)
     {
-        // CorrelationId must run first so all subsequent middleware and MediatR
-        // pipeline behaviors have access to the ID via ICorrelationIdProvider.
+        // CorrelationId first — stamps X-Correlation-ID before any other middleware
+        // reads logs/traces, so the ID propagates through the entire request chain.
         app.UseCorrelationId();
+
+        // Response compression — must run before any middleware that writes the body.
+        app.UseResponseCompression();
+
         app.UseAuthentication();
         app.UseAuthorization();
+
+        // Output cache — sits after auth so cached responses respect authorization.
+        app.UseOutputCache();
+
+        // Liveness: is the process up?  Readiness: are backing services reachable?
+        app.MapHealthChecks("/health/live", new HealthCheckOptions
+        {
+            Predicate = _ => false,   // no checks — just confirms the process is alive
+            ResponseWriter = HealthChecks.UI.Client.UIResponseWriter.WriteHealthCheckUIResponse
+        });
+        app.MapHealthChecks("/health/ready", new HealthCheckOptions
+        {
+            Predicate = hc => hc.Tags.Contains("ready"),
+            ResponseWriter = HealthChecks.UI.Client.UIResponseWriter.WriteHealthCheckUIResponse
+        });
+        // Combined legacy endpoint for backwards compatibility with existing probes
         app.MapHealthChecks("/health", new HealthCheckOptions
         {
             ResponseWriter = HealthChecks.UI.Client.UIResponseWriter.WriteHealthCheckUIResponse

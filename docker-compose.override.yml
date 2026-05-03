@@ -10,9 +10,7 @@ services:
       - JwtSettings__SecretKey=B2BPlatformSuperSecretKeyForJWTTokenGeneration2025!
       - JwtSettings__Issuer=B2B.Identity
       - JwtSettings__Audience=B2B.Platform
-      - RabbitMQ__Host=rabbitmq
-      - RabbitMQ__Username=b2b_user
-      - RabbitMQ__Password=b2b_pass
+      - Kafka__BootstrapServers=kafka:9092
       - OpenTelemetry__Endpoint=http://jaeger:4317
       - Seq__Url=http://seq:80
 
@@ -24,9 +22,7 @@ services:
       - JwtSettings__SecretKey=B2BPlatformSuperSecretKeyForJWTTokenGeneration2025!
       - JwtSettings__Issuer=B2B.Identity
       - JwtSettings__Audience=B2B.Platform
-      - RabbitMQ__Host=rabbitmq
-      - RabbitMQ__Username=b2b_user
-      - RabbitMQ__Password=b2b_pass
+      - Kafka__BootstrapServers=kafka:9092
       - OpenTelemetry__Endpoint=http://jaeger:4317
       - Seq__Url=http://seq:80
 
@@ -38,18 +34,14 @@ services:
       - JwtSettings__SecretKey=B2BPlatformSuperSecretKeyForJWTTokenGeneration2025!
       - JwtSettings__Issuer=B2B.Identity
       - JwtSettings__Audience=B2B.Platform
-      - RabbitMQ__Host=rabbitmq
-      - RabbitMQ__Username=b2b_user
-      - RabbitMQ__Password=b2b_pass
+      - Kafka__BootstrapServers=kafka:9092
       - OpenTelemetry__Endpoint=http://jaeger:4317
       - Seq__Url=http://seq:80
 
   notification-worker:
     environment:
       - DOTNET_ENVIRONMENT=Development
-      - RabbitMQ__Host=rabbitmq
-      - RabbitMQ__Username=b2b_user
-      - RabbitMQ__Password=b2b_pass
+      - Kafka__BootstrapServers=kafka:9092
       - Smtp__Host=mailhog
       - Smtp__Port=1025
       - Smtp__EnableSsl=false
@@ -62,9 +54,7 @@ services:
       - JwtSettings__SecretKey=B2BPlatformSuperSecretKeyForJWTTokenGeneration2025!
       - JwtSettings__Issuer=B2B.Identity
       - JwtSettings__Audience=B2B.Platform
-      - RabbitMQ__Host=rabbitmq
-      - RabbitMQ__Username=b2b_user
-      - RabbitMQ__Password=b2b_pass
+      - Kafka__BootstrapServers=kafka:9092
       - OpenTelemetry__Endpoint=http://jaeger:4317
       - Seq__Url=http://seq:80
 
@@ -76,9 +66,7 @@ services:
       - JwtSettings__SecretKey=B2BPlatformSuperSecretKeyForJWTTokenGeneration2025!
       - JwtSettings__Issuer=B2B.Identity
       - JwtSettings__Audience=B2B.Platform
-      - RabbitMQ__Host=rabbitmq
-      - RabbitMQ__Username=b2b_user
-      - RabbitMQ__Password=b2b_pass
+      - Kafka__BootstrapServers=kafka:9092
       - OpenTelemetry__Endpoint=http://jaeger:4317
       - Seq__Url=http://seq:80
 
@@ -90,9 +78,7 @@ services:
       - JwtSettings__SecretKey=B2BPlatformSuperSecretKeyForJWTTokenGeneration2025!
       - JwtSettings__Issuer=B2B.Identity
       - JwtSettings__Audience=B2B.Platform
-      - RabbitMQ__Host=rabbitmq
-      - RabbitMQ__Username=b2b_user
-      - RabbitMQ__Password=b2b_pass
+      - Kafka__BootstrapServers=kafka:9092
       - OpenTelemetry__Endpoint=http://jaeger:4317
       - Seq__Url=http://seq:80
 
@@ -104,9 +90,7 @@ services:
       - JwtSettings__SecretKey=B2BPlatformSuperSecretKeyForJWTTokenGeneration2025!
       - JwtSettings__Issuer=B2B.Identity
       - JwtSettings__Audience=B2B.Platform
-      - RabbitMQ__Host=rabbitmq
-      - RabbitMQ__Username=b2b_user
-      - RabbitMQ__Password=b2b_pass
+      - Kafka__BootstrapServers=kafka:9092
       - OpenTelemetry__Endpoint=http://jaeger:4317
       - Seq__Url=http://seq:80
 
@@ -118,9 +102,7 @@ services:
       - JwtSettings__SecretKey=B2BPlatformSuperSecretKeyForJWTTokenGeneration2025!
       - JwtSettings__Issuer=B2B.Identity
       - JwtSettings__Audience=B2B.Platform
-      - RabbitMQ__Host=rabbitmq
-      - RabbitMQ__Username=b2b_user
-      - RabbitMQ__Password=b2b_pass
+      - Kafka__BootstrapServers=kafka:9092
       - OpenTelemetry__Endpoint=http://jaeger:4317
       - Seq__Url=http://seq:80
 
@@ -132,9 +114,7 @@ services:
       - JwtSettings__SecretKey=B2BPlatformSuperSecretKeyForJWTTokenGeneration2025!
       - JwtSettings__Issuer=B2B.Identity
       - JwtSettings__Audience=B2B.Platform
-      - RabbitMQ__Host=rabbitmq
-      - RabbitMQ__Username=b2b_user
-      - RabbitMQ__Password=b2b_pass
+      - Kafka__BootstrapServers=kafka:9092
       - OpenTelemetry__Endpoint=http://jaeger:4317
       - Seq__Url=http://seq:80
 

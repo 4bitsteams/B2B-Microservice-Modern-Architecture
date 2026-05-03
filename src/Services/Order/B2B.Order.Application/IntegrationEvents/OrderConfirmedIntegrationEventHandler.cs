@@ -11,7 +11,7 @@ namespace B2B.Order.Application.IntegrationEvents;
 ///
 /// Executed by <c>DomainEventBehavior</c> after <c>SaveChangesAsync</c> completes,
 /// guaranteeing the order row exists in the database before the message is published
-/// to RabbitMQ.  This is the entry point for the OrderFulfillmentSaga.
+/// to the Kafka topic <c>b2b-order-confirmed</c>.  This is the entry point for the OrderFulfillmentSaga.
 ///
 /// The integration event carries <see cref="OrderItemSagaDetail"/> so the saga can
 /// issue stock reservation commands without an additional DB round-trip.

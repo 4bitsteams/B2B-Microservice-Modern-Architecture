@@ -63,7 +63,10 @@ After step 1, the following are available locally:
 | http://localhost:5341 | Seq logs |
 | http://localhost:8025 | MailHog (catches outgoing email) |
 | http://localhost:5050 | pgAdmin |
-| http://localhost:15672 | RabbitMQ management |
+| http://localhost:8090  | Kafka UI (browse topics, consumer groups, offsets) |
+| http://localhost:9090  | Prometheus |
+| http://localhost:3000  | Grafana dashboards |
+| localhost:6432         | PgBouncer (Postgres connection pooler — internal use) |
 
 ## 3. Branching & Commits
 
@@ -87,7 +90,7 @@ After step 1, the following are available locally:
 - **Dependency direction.** Domain → nothing. Application → Core. Infrastructure → Application + Core. API → Infrastructure. Never reverse.
 - **No business exceptions.** Return `Result.Failure(Error.X(...))`. Throw only for invariants and unexpected bugs.
 - **Aggregate-only mutation.** Child entities mutated through their root only. No child-only repository.
-- **Multi-tenancy.** Every query filters on `ICurrentUser.TenantId`. PRs lacking this filter will be blocked.
+- **Multi-tenancy.** Entities implementing `ITenantEntity` receive an automatic global EF query filter — no manual `.Where(e => e.TenantId == ...)` required in handlers or repositories. Background services that need to scan all tenants must call `IgnoreQueryFilters()` explicitly. PRs that add a new entity without `ITenantEntity` (when multi-tenancy applies) will be blocked.
 - **CQRS purity.** Commands return `Result` / `Result<T>`. Queries return `Result<T>` and have no side-effects.
 - **Type aliases.** Use aliases in all files under `B2B.Order.*`, `B2B.Product.*`, and `B2B.Vendor.*`:
   ```csharp
@@ -243,8 +246,10 @@ dotnet test --filter "FullyQualifiedName~CreateOrderHandlerTests"
 
 - **Watching logs in real time:** open Seq at http://localhost:5341.
 - **Tracing a request end-to-end:** open Jaeger at http://localhost:16686.
+- **Viewing metrics and dashboards:** open Grafana at http://localhost:3000 (default admin/admin). Raw Prometheus at http://localhost:9090.
 - **Inspecting RabbitMQ queues:** http://localhost:15672 → Queues tab.
 - **Reading email:** http://localhost:8025 (MailHog catches everything).
+- **Health probes:** `/health/live` (liveness — no checks), `/health/ready` (readiness — DB + Redis + RabbitMQ).
 
 ## 9. Database Migrations
 
@@ -274,7 +279,8 @@ Migrations live under `Persistence/Migrations/`. Squash only with explicit team 
 ```markdown
 - [ ] Tests added/updated and passing locally (`dotnet test B2B.sln`)
 - [ ] No new business exception thrown — used Result + Error
-- [ ] All queries scoped by TenantId
+- [ ] New entity implements `ITenantEntity` if it belongs to a specific tenant (global EF filter applied automatically)
+- [ ] Background services that scan all tenants use `IgnoreQueryFilters()` explicitly
 - [ ] No direct reference to BCrypt.Net / Npgsql / Redis / MassTransit from Application or Domain
 - [ ] Type alias used in files under namespaces with name collision (Order, Product, Vendor)
 - [ ] Authorization logic extracted to `IAuthorizer<TCommand>` (not embedded in handler)
@@ -283,6 +289,7 @@ Migrations live under `Persistence/Migrations/`. Squash only with explicit team 
 - [ ] New test project added to B2B.sln if applicable
 - [ ] New service added to docker-compose.yml and docker-compose.override.yml if applicable
 - [ ] New database added to infrastructure/postgres/init.sql if applicable
+- [ ] HTTP 503 handled gracefully in client code (bulkhead/circuit breaker can return 503 under high load)
 ```
 
 ## 11. Security & Secrets

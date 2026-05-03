@@ -5,8 +5,8 @@ using B2B.Shared.Infrastructure.Persistence;
 
 namespace B2B.Product.Infrastructure.Persistence;
 
-public sealed class ProductDbContext(DbContextOptions<ProductDbContext> options)
-    : BaseDbContext(options)
+public sealed class ProductDbContext(DbContextOptions<ProductDbContext> options, IServiceProvider serviceProvider)
+    : BaseDbContext(options, serviceProvider)
 {
     public DbSet<Domain.Entities.Product> Products => Set<Domain.Entities.Product>();
     public DbSet<Category> Categories => Set<Category>();

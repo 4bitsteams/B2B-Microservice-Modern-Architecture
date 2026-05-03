@@ -10,7 +10,7 @@ namespace B2B.Shared.Infrastructure.Behaviors;
 ///
 /// Every log line includes <c>CorrelationId</c> so a single value ties together
 /// the HTTP request log (from Serilog), the MediatR command/query logs (here),
-/// the EF Core query logs, and any outgoing RabbitMQ messages — all in one
+/// the EF Core query logs, and any outgoing Kafka messages — all in one
 /// Seq/Jaeger search.
 /// </summary>
 public sealed class LoggingBehavior<TRequest, TResponse>(

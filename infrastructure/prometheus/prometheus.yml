@@ -1,0 +1,28 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: development
+    platform: b2b-microservices
+
+scrape_configs:
+  # ── OTel Collector Prometheus endpoint ──────────────────────────────────────
+  # All microservices push metrics via OTLP → Collector → Prometheus scrape.
+  # This single scrape target covers every service without per-service config.
+  - job_name: otel-collector
+    static_configs:
+      - targets: ['otel-collector:8889']
+        labels:
+          source: otel-collector
+
+  # ── Direct scrape targets (optional: services that expose /metrics directly) ──
+  # Uncomment when native Prometheus exporters are added per-service.
+  # - job_name: gateway
+  #   static_configs:
+  #     - targets: ['gateway:8080']
+  #   metrics_path: /metrics
+
+  # ── Prometheus self-monitoring ───────────────────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

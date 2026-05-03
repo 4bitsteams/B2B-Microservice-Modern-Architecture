@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Serilog;
@@ -13,17 +14,24 @@ using B2B.Shared.Core.Interfaces;
 using B2B.Shared.Infrastructure.Http;
 
 // ── Rate limiter configuration constants ──────────────────────────────────────
-// Tuned for a B2B API: burst-tolerant but bounded to prevent abuse.
-// Fixed window: 100 req / 10 s guards against short bursts.
-// Sliding window: 500 req / 60 s (6 segments) governs sustained throughput.
+// Three complementary policies work together:
+//   1. "fixed"           — global burst guard (100 req / 10 s), applies to all routes.
+//   2. "sliding-per-ip"  — sustained per-IP throughput (500 req / 60 s).
+//   3. "per-tenant"      — per-tenant sliding window (1000 req / 60 s); tenants that
+//                          share IPs (NAT, enterprise proxies) get a fair share.
+//
+// Partition key precedence: X-Tenant-ID header → TenantId JWT claim → fallback IP.
 const string FixedWindowPolicyName   = "fixed";
 const string SlidingWindowPolicyName = "sliding-per-ip";
+const string PerTenantPolicyName     = "per-tenant";
 const string AllowAllCorsPolicy      = "AllowAll";
 
-const int  FixedWindowPermitLimit          = 100;
-const int  FixedWindowQueueLimit           = 50;
-const int  SlidingWindowPermitLimit        = 500;
-const int  SlidingWindowSegmentsPerWindow  = 6;
+const int FixedWindowPermitLimit         = 100;
+const int FixedWindowQueueLimit          = 50;
+const int SlidingWindowPermitLimit       = 500;
+const int SlidingWindowSegmentsPerWindow = 6;
+const int PerTenantPermitLimit           = 1_000;
+const int PerTenantSegmentsPerWindow     = 6;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -96,6 +104,33 @@ builder.Services.AddRateLimiter(opt =>
         });
     });
 
+    // Per-tenant sliding window — partition by X-Tenant-ID header, then JWT
+    // tenant_id claim, then fall back to IP. Tenants behind corporate NAT that
+    // share a single IP still get an isolated quota so one tenant cannot starve
+    // others.
+    opt.AddPolicy(PerTenantPolicyName, httpContext =>
+    {
+        // Prefer explicit header (set by tenant SDKs / API clients).
+        var tenantKey = httpContext.Request.Headers["X-Tenant-ID"].ToString();
+
+        // Fall back to tenant_id JWT claim extracted from the validated token.
+        if (string.IsNullOrEmpty(tenantKey))
+        {
+            tenantKey = httpContext.User.FindFirst("tenant_id")?.Value
+                ?? httpContext.Connection.RemoteIpAddress?.ToString()
+                ?? "unknown";
+        }
+
+        return RateLimitPartition.GetSlidingWindowLimiter(tenantKey, _ => new SlidingWindowRateLimiterOptions
+        {
+            Window = TimeSpan.FromMinutes(1),
+            PermitLimit = PerTenantPermitLimit,
+            SegmentsPerWindow = PerTenantSegmentsPerWindow,
+            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+            QueueLimit = 0
+        });
+    });
+
     opt.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
 
@@ -106,14 +141,18 @@ builder.Services.AddCors(opt =>
         policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
 });
 
-// OpenTelemetry
+// OpenTelemetry — traces + metrics exported via OTLP to collector
+// (collector scrapes Prometheus / forwards to Grafana Cloud / Jaeger)
+var otlpEndpoint = builder.Configuration["OpenTelemetry:Endpoint"] ?? "http://localhost:4317";
 builder.Services.AddOpenTelemetry()
     .ConfigureResource(r => r.AddService("B2B.Gateway"))
     .WithTracing(tracing => tracing
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation()
-        .AddOtlpExporter(o => o.Endpoint = new Uri(
-            builder.Configuration["OpenTelemetry:Endpoint"]!)));
+        .AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint)))
+    .WithMetrics(metrics => metrics
+        .AddRuntimeInstrumentation()
+        .AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint)));
 
 // Health Checks
 builder.Services.AddHealthChecks()

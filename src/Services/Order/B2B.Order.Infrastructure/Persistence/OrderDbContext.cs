@@ -8,8 +8,8 @@ using OrderItemEntity = B2B.Order.Domain.Entities.OrderItem;
 
 namespace B2B.Order.Infrastructure.Persistence;
 
-public sealed class OrderDbContext(DbContextOptions<OrderDbContext> options)
-    : BaseDbContext(options)
+public sealed class OrderDbContext(DbContextOptions<OrderDbContext> options, IServiceProvider serviceProvider)
+    : BaseDbContext(options, serviceProvider)
 {
     public DbSet<OrderEntity> Orders => Set<OrderEntity>();
     public DbSet<OrderItemEntity> OrderItems => Set<OrderItemEntity>();

@@ -5,8 +5,8 @@ using ReviewEntity = B2B.Review.Domain.Entities.Review;
 
 namespace B2B.Review.Infrastructure.Persistence;
 
-public sealed class ReviewDbContext(DbContextOptions<ReviewDbContext> options)
-    : BaseDbContext(options)
+public sealed class ReviewDbContext(DbContextOptions<ReviewDbContext> options, IServiceProvider serviceProvider)
+    : BaseDbContext(options, serviceProvider)
 {
     public DbSet<ReviewEntity> Reviews => Set<ReviewEntity>();
 

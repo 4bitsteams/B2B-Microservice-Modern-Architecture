@@ -63,7 +63,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -101,7 +101,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -139,7 +139,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -170,7 +170,7 @@ services:
     environment:
       - DOTNET_ENVIRONMENT=Development
     depends_on:
-      rabbitmq:
+      kafka:
         condition: service_healthy
       mailhog:
         condition: service_started
@@ -202,7 +202,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      rabbitmq:
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -240,7 +240,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -278,7 +278,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -316,7 +316,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -354,7 +354,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -392,7 +392,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -411,6 +411,59 @@ services:
         reservations:
           cpus: '0.25'
           memory: 128M
+
+  # ─────────────────────────────────────────────────────────
+  # Infrastructure: PgBouncer (PostgreSQL connection pooler)
+  #
+  # At millions of concurrent users each microservice maintains a pool of
+  # short-lived EF Core connections. Without pooling the number of Postgres
+  # backends explodes (default max_connections = 100). PgBouncer multiplexes
+  # thousands of application connections onto a small, stable set of server
+  # connections using transaction-mode pooling — the optimal mode for
+  # connection-per-request frameworks like ASP.NET Core.
+  #
+  # Services connect to pgbouncer:5432 (not postgres:5432 directly).
+  # The override file rewrites the connection string environment variables.
+  # ─────────────────────────────────────────────────────────
+  pgbouncer:
+    image: bitnami/pgbouncer:1
+    container_name: b2b-pgbouncer
+    ports:
+      - "6432:5432"
+    environment:
+      POSTGRESQL_HOST: postgres
+      POSTGRESQL_PORT: 5432
+      POSTGRESQL_USERNAME: b2b_user
+      POSTGRESQL_PASSWORD: b2b_pass
+      POSTGRESQL_DATABASE: b2b_platform
+      PGBOUNCER_DATABASE: b2b_platform
+      PGBOUNCER_POOL_MODE: transaction       # transaction-mode: best for short-lived web requests
+      PGBOUNCER_MAX_CLIENT_CONN: 5000        # max frontend connections from all services
+      PGBOUNCER_DEFAULT_POOL_SIZE: 50        # server connections per database/user pair
+      PGBOUNCER_MIN_POOL_SIZE: 5             # keep warm connections ready
+      PGBOUNCER_MAX_DB_CONNECTIONS: 200      # hard cap on server-side connections
+      PGBOUNCER_RESERVE_POOL_SIZE: 10        # extra connections for bursts
+      PGBOUNCER_RESERVE_POOL_TIMEOUT: 5      # seconds before using reserve
+      PGBOUNCER_IGNORE_STARTUP_PARAMETERS: extra_float_digits
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 5432"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - b2b-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 32M
 
   # ─────────────────────────────────────────────────────────
   # Infrastructure: PostgreSQL
@@ -473,26 +526,46 @@ services:
           memory: 64M
 
   # ─────────────────────────────────────────────────────────
-  # Infrastructure: RabbitMQ
+  # Infrastructure: Apache Kafka (KRaft mode — no ZooKeeper)
+  #
+  # KRaft (Kafka Raft) is the built-in consensus protocol introduced in
+  # Kafka 3.3 that removes the ZooKeeper dependency. A single-node KRaft
+  # cluster is ideal for development: one container, no ZooKeeper sidecar.
+  #
+  # Listeners:
+  #   PLAINTEXT://kafka:9092   — used by all services inside the Docker network
+  #   CONTROLLER://kafka:9093  — internal KRaft controller-to-broker communication
+  #   EXTERNAL://localhost:9094 — used by tools on the host machine (kafka-ui, CLI)
   # ─────────────────────────────────────────────────────────
-  rabbitmq:
-    image: masstransit/rabbitmq:latest
-    container_name: b2b-rabbitmq
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: b2b-kafka
     ports:
-      - "5672:5672"
-      - "15672:15672"   # Management UI
+      - "9092:9092"    # Internal broker (services inside Docker network)
+      - "9094:9094"    # External broker (host tools / kafka-ui)
     environment:
-      RABBITMQ_DEFAULT_USER: b2b_user
-      RABBITMQ_DEFAULT_PASS: b2b_pass
-      RABBITMQ_DEFAULT_VHOST: /
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
     volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
+      - kafka_data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
       interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
     networks:
       - b2b-network
     restart: unless-stopped
@@ -500,10 +573,109 @@ services:
       resources:
         limits:
           cpus: '1.0'
-          memory: 512M
+          memory: 1G
         reservations:
           cpus: '0.25'
-          memory: 128M
+          memory: 256M
+
+  # ─────────────────────────────────────────────────────────
+  # Dev Tools: Kafka UI (replaces RabbitMQ Management UI)
+  #
+  # Browse topics, consumer groups, messages, and offsets.
+  # Access at http://localhost:8090
+  # ─────────────────────────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: b2b-kafka-ui
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: b2b-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - b2b-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+
+  # ─────────────────────────────────────────────────────────
+  # Observability: OpenTelemetry Collector
+  #
+  # Receives OTLP (traces + metrics) from all services on port 4317 (gRPC)
+  # and 4318 (HTTP). Pipelines:
+  #   traces  → Jaeger (OTLP)
+  #   metrics → Prometheus (scrape endpoint :8889)
+  #
+  # Services export to otel-collector:4317, not directly to Jaeger/Prometheus,
+  # so the observability backend can be swapped without touching application code.
+  # ─────────────────────────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    container_name: b2b-otel-collector
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./infrastructure/otel/collector.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+      - "8889:8889"   # Prometheus metrics scrape endpoint
+    depends_on:
+      - jaeger
+    networks:
+      - b2b-network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Observability: Prometheus (Metrics storage + alerting)
+  # ─────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: b2b-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - otel-collector
+    networks:
+      - b2b-network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────
+  # Observability: Grafana (Dashboards)
+  # ─────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: b2b-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    volumes:
+      - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - b2b-network
+    restart: unless-stopped
 
   # ─────────────────────────────────────────────────────────
   # Observability: Jaeger (Distributed Tracing)
@@ -575,5 +747,7 @@ networks:
 volumes:
   postgres_data:
   redis_data:
-  rabbitmq_data:
+  kafka_data:
   seq_data:
+  prometheus_data:
+  grafana_data:

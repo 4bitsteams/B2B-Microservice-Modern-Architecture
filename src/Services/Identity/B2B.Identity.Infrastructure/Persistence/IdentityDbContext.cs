@@ -5,8 +5,8 @@ using B2B.Shared.Infrastructure.Persistence;
 
 namespace B2B.Identity.Infrastructure.Persistence;
 
-public sealed class IdentityDbContext(DbContextOptions<IdentityDbContext> options)
-    : BaseDbContext(options)
+public sealed class IdentityDbContext(DbContextOptions<IdentityDbContext> options, IServiceProvider serviceProvider)
+    : BaseDbContext(options, serviceProvider)
 {
     public DbSet<User> Users => Set<User>();
     public DbSet<Role> Roles => Set<Role>();

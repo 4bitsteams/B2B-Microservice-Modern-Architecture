@@ -12,11 +12,12 @@ This README is the **technical entry point for contributors**. For day-to-day wo
 |---|---|
 | **Runtime** | .NET 9 (rolls forward to 10) |
 | **Style** | Clean Architecture per service · CQRS via MediatR 12 · Result pattern |
-| **Persistence** | EF Core 9 · PostgreSQL 16 (one DB per service) |
-| **Cache** | Redis 7 (cache-aside) |
-| **Messaging** | MassTransit + RabbitMQ 3 (in-memory outbox) |
-| **Edge** | YARP gateway (rate-limit + JWT validation) |
-| **Observability** | Jaeger (traces) · Seq (logs) · ASP.NET HealthChecks |
+| **Persistence** | EF Core 9 · PostgreSQL 16 (one DB per service) · PgBouncer (transaction-mode pooling) |
+| **Cache** | HybridCache (L1 in-process 2 min + L2 Redis 15 min) · Redis 7 (cache-aside via `ICacheService`) |
+| **Messaging** | MassTransit + Apache Kafka 3.7 KRaft (Kafka Rider, in-memory outbox) |
+| **Edge** | YARP gateway (per-tenant rate-limit + JWT validation) |
+| **Resilience** | Polly 8 three-layer pipeline: Bulkhead → Circuit Breaker → Retry (exponential + jitter) |
+| **Observability** | Jaeger (traces) · Seq (logs) · Prometheus + Grafana (metrics) · OTel Collector · Split `/health/live` + `/health/ready` |
 | **Tests** | xUnit + FluentAssertions + NSubstitute — **586 tests, 0 failures** |
 
 ---
@@ -98,11 +99,11 @@ Exceptions are reserved for invariants and bugs. Controllers map `ErrorType` →
 
 ### Event-Driven Messaging
 - **Domain events** stay inside a service.
-- **Integration events** (`*Integration` records) cross service boundaries via RabbitMQ with the MassTransit in-memory outbox for at-least-once delivery.
+- **Integration events** (`*Integration` records) cross service boundaries via Apache Kafka with the MassTransit in-memory outbox for at-least-once delivery.
 - Notification Worker is a pure consumer — no HTTP surface.
 
 ### Multi-tenancy
-Every entity carries `TenantId`. `ICurrentUser` (resolved from JWT) is injected into handlers; queries must always filter by `currentUser.TenantId`.
+Every entity carries `TenantId`. Entities that implement `ITenantEntity` get an **automatic global EF Core query filter** applied at `BaseDbContext` level — no manual `.Where(e => e.TenantId == ...)` is required in handlers or repositories. Background services call `IgnoreQueryFilters()` explicitly when they need to scan across tenants.
 
 ---
 
@@ -112,7 +113,7 @@ Every entity carries `TenantId`. `ICurrentUser` (resolved from JWT) is injected 
 git clone <repo>
 cd "B2B Microservice Modern Architecture"
 
-# 1. Bring up infra (Postgres, Redis, RabbitMQ, Jaeger, Seq, MailHog, pgAdmin)
+# 1. Bring up infra (Postgres, Redis, Kafka, Jaeger, Seq, MailHog, pgAdmin)
 docker compose up -d
 
 # 2. Build
@@ -146,7 +147,10 @@ dotnet test B2B.sln
 | http://localhost:5341  | Seq logs |
 | http://localhost:8025  | MailHog (outgoing mail) |
 | http://localhost:5050  | pgAdmin |
-| http://localhost:15672 | RabbitMQ management |
+| http://localhost:8090  | Kafka UI |
+| http://localhost:6432  | PgBouncer (connection pooler, internal) |
+| http://localhost:9090  | Prometheus |
+| http://localhost:3000  | Grafana dashboards |
 
 ---
 
@@ -181,6 +185,11 @@ Lives in `B2B.Shared.Core/Interfaces/` — not Infrastructure. Domain entities d
 using HealthChecks.UI.Client;            // correct
 // using AspNetCore.HealthChecks.UI.Client;  // wrong
 ```
+
+Health endpoints are split:
+- `/health/live` — liveness probe (no dependency checks; returns 200 immediately)
+- `/health/ready` — readiness probe (checks PostgreSQL + Redis tagged `"ready"`; Kafka validated at startup by MassTransit Rider host)
+- `/health` — legacy all-checks endpoint
 
 ### 5.6 Package versions
 EF Core packages must be **9.0.3** (Npgsql 9.0.3 minimum constraint). Pinned in [Directory.Packages.props](Directory.Packages.props).
@@ -237,6 +246,8 @@ EF Core packages must be **9.0.3** (Npgsql 9.0.3 minimum constraint). Pinned in 
 | `CS1022: Type or namespace definition, or end-of-file expected` | Stray `}` at end of file |
 | `Could not resolve Npgsql 9.0.3` | EF Core packages not pinned to 9.0.3 |
 | `401` from gateway | JWT issuer/audience mismatch with `Identity.Api` config |
+| `503 Service Unavailable` from API | Bulkhead saturated (too many concurrent calls) or circuit breaker open (too many recent failures) |
 | Domain events never fire | Handler returned before `SaveChangesAsync`, or aggregate not tracked by `ChangeTracker` |
-| Consumer not receiving messages | RabbitMQ container down, or contract record namespace differs between publisher and consumer |
+| Consumer not receiving messages | Kafka container down, or contract record namespace differs between publisher and consumer, or consumer group offset misconfigured |
 | Basket returns 404 after restart | Expected — basket is Redis-only (ephemeral); no persistent backing store |
+| Global tenant filter returning wrong rows | Entity does not implement `ITenantEntity`; apply `IgnoreQueryFilters()` explicitly for cross-tenant background queries |

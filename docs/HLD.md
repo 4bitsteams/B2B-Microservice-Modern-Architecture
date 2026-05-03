@@ -14,11 +14,11 @@
 - **API Gateway** (YARP) as the single public ingress with per-IP rate limiting.
 - **Database-per-service** (PostgreSQL): `b2b_identity`, `b2b_product`, `b2b_order`, `b2b_payment`, `b2b_shipping`, `b2b_vendor`, `b2b_discount`, `b2b_review`. Services do not share schemas.
 - **Basket** is the sole exception — it uses Redis as its only data store (intentionally ephemeral).
-- **Asynchronous integration** via RabbitMQ + MassTransit for cross-service events.
+- **Asynchronous integration** via Apache Kafka + MassTransit Kafka Rider for cross-service events.
 - **Clean Architecture** within each service: Domain ← Application ← Infrastructure ← API.
 - **CQRS** via MediatR 12 with a full pipeline of 8 behaviors (in registration order):
   `Logging → Retry → Idempotency → Performance → Authorization → Validation → Audit → DomainEvent → Handler`
-- **Multi-tenant** by `TenantId` row scoping; resolved from JWT claims on every request.
+- **Multi-tenant** by `TenantId` row scoping; resolved from JWT claims on every request. Entities that implement `ITenantEntity` receive an automatic global EF Core query filter — no per-query `.Where` required.
 - **Saga** — `OrderFulfillmentSaga` (MassTransit state machine) orchestrates stock reservation, payment, and shipment with compensating rollback.
 
 ## 2. Context Diagram
@@ -47,15 +47,15 @@ flowchart LR
   GW --> Ds[Discount :5008]
   GW --> Rv[Review :5011]
 
-  Or -- OrderConfirmed / Saga commands --> RMQ[(RabbitMQ)]
-  Pr -- ProductLowStock / StockReserved --> RMQ
-  Id -- UserRegistered --> RMQ
-  Ba -- BasketCheckedOut --> RMQ
-  Pa -- PaymentProcessed / Refunded --> RMQ
-  Sh -- ShipmentCreated / Delivered --> RMQ
+  Or -- OrderConfirmed / Saga commands --> KF[(Apache Kafka)]
+  Pr -- ProductLowStock / StockReserved --> KF
+  Id -- UserRegistered --> KF
+  Ba -- BasketCheckedOut --> KF
+  Pa -- PaymentProcessed / Refunded --> KF
+  Sh -- ShipmentCreated / Delivered --> KF
 
-  RMQ --> NW[Notification Worker]
-  RMQ --> Saga[OrderFulfillmentSaga]
+  KF --> NW[Notification Worker]
+  KF --> Saga[OrderFulfillmentSaga]
   Saga -- StockReservationCommand --> Pr
   Saga -- ProcessPaymentCommand --> Pa
   Saga -- CreateShipmentCommand --> Sh
@@ -106,18 +106,23 @@ Dependency rule: arrows always point inward. The Domain layer has zero outward d
 |---|---|---|
 | Authentication | JWT bearer, validated at the gateway and re-validated at each service | `B2B.Shared.Infrastructure.Extensions.AddJwtAuthentication` |
 | Authorization | Role claims on JWT + `AuthorizationBehavior` pipeline resolving `IAuthorizer<TRequest>` implementations via DI | `AuthorizationBehavior` + `IAuthorizer<>` per command |
-| Multi-tenancy | `ICurrentUser.TenantId` injected from JWT; manual `Where(x => x.TenantId == ...)` filter on every query | `CurrentUserService` + handlers |
+| Multi-tenancy | `ICurrentUser.TenantId` from JWT; automatic global EF filter on every `ITenantEntity`; background services use `IgnoreQueryFilters()` explicitly | `BaseDbContext` global filter + `ITenantEntity` |
 | Validation | FluentValidation auto-discovered per assembly; runs in `ValidationBehavior` pipeline | `ValidationBehavior` |
 | Idempotency | Marker interface `IIdempotentCommand` + Redis-backed `IdempotencyBehavior` | `IdempotencyBehavior` |
-| Retry | Transient failure retry with exponential back-off in `RetryBehavior`; configurable via `RetryBehaviorOptions` | `RetryBehavior` |
+| Retry | Three-layer Polly 8 pipeline: Bulkhead (`SemaphoreSlim` per command type) → Circuit Breaker (fail-fast when error rate high) → Retry (exponential + jitter); returns `Error.ServiceUnavailable` (HTTP 503) on bulkhead saturation or open circuit | `RetryBehavior` + `CommandBulkheadProvider` |
 | Performance | Warning logged when handler exceeds threshold in `PerformanceBehavior` | `PerformanceBehavior` |
 | Audit | Command metadata written to audit log in `AuditBehavior` | `AuditBehavior` |
 | Logging | Serilog → Console + Seq, request-name + elapsed ms in `LoggingBehavior` | Serilog + `LoggingBehavior` |
-| Tracing | OpenTelemetry → OTLP → Jaeger; ASP.NET + HttpClient instrumented | `AddOpenTelemetry` extension |
-| Health | `/health` endpoint per service; Postgres + Redis probes; gateway active health checks every 10s | `AddDefaultHealthChecks` + YARP config |
-| Caching | Redis distributed cache via `ICacheService` (cache-aside pattern) | `RedisCacheService` |
-| Messaging | MassTransit + RabbitMQ; in-memory outbox per consumer | `MassTransitEventBus` |
-| Rate limiting | Per-IP fixed window + sliding window policies at the gateway | `AddRateLimiter` in Gateway |
+| Tracing | OpenTelemetry → OTLP → OTel Collector → Jaeger; ASP.NET + HttpClient + EF Core instrumented | `AddServiceOpenTelemetry` extension |
+| Metrics | OpenTelemetry → OTLP → OTel Collector → Prometheus scrape → Grafana dashboards; Runtime + EF Core instrumented | `AddServiceOpenTelemetry` extension |
+| Health | Split `/health/live` (always 200) + `/health/ready` (Postgres + Redis tagged `"ready"`); Kafka validated at startup by MassTransit Rider host; gateway active health checks every 10s | `AddDefaultHealthChecks` + YARP config |
+| Caching | L1: `HybridCache` in-process (2 min); L2: Redis via `ICacheService` cache-aside (15 min HybridCache / 5 min manual) | `HybridCache` + `RedisCacheService` |
+| Response compression | Brotli (preferred) + Gzip for JSON responses | `AddResponseCompression` in `UseSharedMiddleware` |
+| Output caching | Base 10s policy + named `"queries"` policy (30s, vary by page/pageSize/tenantId) | `AddOutputCache` in `AddSharedInfrastructure` |
+| Messaging | MassTransit + Apache Kafka Rider; in-memory outbox per consumer | `MassTransitEventBus` |
+| Rate limiting | Per-tenant sliding window (1,000 req/min; partitioned by `X-Tenant-ID` header → JWT claim → IP fallback) + per-IP fixed window at gateway | `AddRateLimiter` in Gateway |
+| DB connection pooling | PgBouncer transaction-mode pool: 5,000 client connections → 50 server connections per DB; all services connect via PgBouncer `:6432` | `pgbouncer` Docker service |
+| Stuck saga detection | `StuckSagaCleanupWorker` scans every 5 min for saga rows past 3× configured timeout; logs at Warning | `B2B.Order.Infrastructure.Workers` |
 
 ## 6. Communication Patterns
 
@@ -126,11 +131,11 @@ Dependency rule: arrows always point inward. The Domain layer has zero outward d
 | Client → Gateway | Sync HTTP/JSON | YARP, port 5000 |
 | Gateway → Service | Sync HTTP/JSON | Service container DNS, port 8080 |
 | Service → Service (data) | **Not allowed.** Services do not call each other directly | — |
-| Service → Service (events) | Async pub/sub | RabbitMQ exchanges, MassTransit consumers |
-| Order Saga → Product | Async command (StockReservationCommand) | RabbitMQ |
-| Order Saga → Payment | Async command (ProcessPaymentCommand) | RabbitMQ |
-| Order Saga → Shipping | Async command (CreateShipmentCommand) | RabbitMQ |
-| Service → Worker | Async pub/sub | Same RabbitMQ |
+| Service → Service (events) | Async pub/sub | Apache Kafka topics, MassTransit Kafka Rider consumers |
+| Order Saga → Product | Async command (StockReservationCommand) | In-memory bus (same-process) |
+| Order Saga → Payment | Async command (ProcessPaymentCommand) | In-memory bus (same-process) |
+| Order Saga → Shipping | Async command (CreateShipmentCommand) | In-memory bus (same-process) |
+| Service → Worker | Async pub/sub | Apache Kafka topics (`b2b-order-*`, `b2b-user-*`, etc.) |
 
 The "no direct service-to-service calls" rule enforces autonomy and avoids latency stacking. Cross-service workflows are orchestrated through the saga.
 
@@ -184,11 +189,14 @@ flowchart LR
 | Mapping | Mapster 7 |
 | Reverse proxy | YARP 2.2 |
 | Auth | JWT Bearer + BCrypt password hashing |
-| Cache | Redis 7 + StackExchange.Redis |
-| Messaging | RabbitMQ 3 + MassTransit 8.3 (including Saga state machine) |
+| Cache (L1) | `Microsoft.Extensions.Caching.Hybrid` 9.0.3 — in-process 2 min, stampede-safe |
+| Cache (L2) | Redis 7 + StackExchange.Redis (HybridCache backend + `ICacheService` cache-aside) |
+| DB pooling | PgBouncer 1 (bitnami) — transaction mode, 5,000 client / 200 server connections |
+| Messaging | Apache Kafka 3.7 KRaft + MassTransit 8.3 Kafka Rider (including Saga state machine) |
 | Logging | Serilog → Seq |
-| Tracing | OpenTelemetry → Jaeger |
-| Resilience | Polly 8 + Microsoft.Extensions.Http.Resilience |
+| Tracing | OpenTelemetry → OTLP → OTel Collector → Jaeger |
+| Metrics | OpenTelemetry (Runtime + EF Core) → OTLP → OTel Collector → Prometheus → Grafana |
+| Resilience | Polly 8 — three-layer: `SemaphoreSlim` Bulkhead + Circuit Breaker + Retry |
 | Container | Docker, docker-compose for local |
 | Tests | xUnit, FluentAssertions, NSubstitute, Bogus, Testcontainers |
 
@@ -209,21 +217,29 @@ flowchart TB
     Rv[review-service :5011]
     NW[notification-worker]
     PG[(postgres :5432)]
+    PB[pgbouncer :6432]
     R[(redis :6379)]
-    RMQ[(rabbitmq :5672 / :15672)]
+    KF[(kafka :9092)]
+    KFU[kafka-ui :8090]
+    OC[otel-collector :4317]
     JG[jaeger :16686]
+    PR[prometheus :9090]
+    GF[grafana :3000]
     SQ[seq :5341]
     MH[mailhog :8025]
     PGA[pgadmin :5050]
   end
 
   GW --> Id & Pr & Or & Ba & Pa & Sh & Vn & Ds & Rv
-  Id & Pr & Or & Pa & Sh & Vn & Ds & Rv --> PG
+  Id & Pr & Or & Pa & Sh & Vn & Ds & Rv --> PB --> PG
   Id & Pr & Or & Ba & Pa & Sh & Ds --> R
-  Id & Pr & Or & Ba & Pa & Sh & Vn & Ds & Rv --> RMQ
-  RMQ --> NW
+  Id & Pr & Or & Ba & Pa & Sh & Vn & Ds & Rv --> KF
+  KF --> NW
+  KFU -.monitors.-> KF
   NW --> MH
-  Id & Pr & Or & Pa & Sh & Vn & Ds & Rv -- traces --> JG
+  Id & Pr & Or & Pa & Sh & Vn & Ds & Rv -- OTLP traces+metrics --> OC
+  OC -- traces --> JG
+  OC -- metrics scrape --> PR --> GF
   Id & Pr & Or & Pa & Sh & Vn & Ds & Rv -- logs --> SQ
 ```
 
@@ -231,14 +247,17 @@ flowchart TB
 
 | Axis | Approach |
 |---|---|
-| Read traffic | Cache-aside on Redis; read replicas on PG when needed |
+| Read traffic | HybridCache (L1 in-process + L2 Redis); cache-aside via `ICacheService`; read replicas on PG when needed |
 | Write throughput per service | Horizontal scale-out behind gateway; stateless API processes |
-| Worker throughput | Multiple worker replicas as competing RabbitMQ consumers; per-queue prefetch tuned per consumer |
+| Worker throughput | Multiple worker replicas as competing Kafka consumers in consumer group `b2b-notification-worker`; partition count determines max parallelism |
 | Saga concurrency | Optimistic concurrency (`ConcurrencyMode.Optimistic`) on saga state rows; EF retry on conflict |
 | Basket throughput | Redis atomic operations (HSET, HDEL); horizontal Redis cluster when needed |
-| Hot tenant | (Roadmap) per-tenant rate limit at gateway + per-tenant Npgsql pool cap |
-| DB connections | (Roadmap) PgBouncer transaction-pool fronting PG when replica count grows |
-| Event throughput | One queue per integration event; consistent-hash partition key for per-key ordering (roadmap) |
+| Hot tenant | Per-tenant sliding window rate limit at gateway (1,000 req/min, partitioned by `X-Tenant-ID`) |
+| DB connections | PgBouncer transaction-mode pool (5,000 client → 200 server connections) fronts all PG databases |
+| Concurrency isolation | `CommandBulkheadProvider` — per-command-type `SemaphoreSlim`; rejects excess requests instantly (HTTP 503) |
+| Fault tolerance | Circuit Breaker (break at 50% failure over 10s) prevents cascade failure; auto-recovers after 30s |
+| Response bandwidth | Brotli/Gzip compression on all JSON responses; output caching (30s) for list queries |
+| Event throughput | One Kafka topic per integration event type; partition key for per-key ordering; consumer group `b2b-notification-worker` for competing consumers |
 
 ## 11. Security Architecture
 
@@ -256,11 +275,12 @@ flowchart TB
 | Signal | Sink | Tool |
 |---|---|---|
 | Logs | Seq (`http://seq:5341`) | Structured JSON via Serilog |
-| Traces | Jaeger (`http://jaeger:16686`) | OTLP exporter |
-| Metrics | (planned) Prometheus/OTLP | OpenTelemetry metrics API |
-| Health | `/health` per service | UIResponseWriter |
+| Traces | OTel Collector → Jaeger (`http://jaeger:16686`) | OTLP exporter (gRPC :4317) |
+| Metrics | OTel Collector → Prometheus (`http://prometheus:9090`) → Grafana (`:3000`) | OTLP exporter; Runtime + EF Core instrumentation |
+| Health (liveness) | `/health/live` — always 200 | Immediate response, no dependency checks |
+| Health (readiness) | `/health/ready` — Postgres + Redis | UIResponseWriter, tagged `"ready"`; Kafka validated at startup by MassTransit Rider host |
 
-Every inbound request gets a W3C trace context that propagates through HTTP and RabbitMQ headers, so a single `traceId` covers Gateway → Order Service → RabbitMQ → Notification Worker → SMTP.
+Every inbound request gets a W3C trace context that propagates through HTTP and Kafka message headers, so a single `traceId` covers Gateway → Order Service → Kafka → Notification Worker → SMTP.
 
 ## 13. Reliability Patterns
 
@@ -270,9 +290,13 @@ Every inbound request gets a W3C trace context that propagates through HTTP and 
 | PG transient retry | ✅ Active | `npg.EnableRetryOnFailure(3)` per DbContext |
 | In-memory outbox | ✅ Active | At-least-once within a single message handler scope |
 | Idempotency cache | ✅ Active | 24h TTL on command pipeline |
-| Health-check gating | ✅ Active | Gateway removes unhealthy nodes from routing |
+| Health-check gating | ✅ Active | Gateway removes unhealthy nodes from routing; split live/ready endpoints |
 | Saga compensating transactions | ✅ Active | Stock release, payment refund, or shipment cancel on any step failure |
-| Saga timeouts | ✅ Active | RabbitMQ delayed message exchange; auto-cancels stalled orders |
+| Saga timeouts | ✅ Active | In-memory bus built-in scheduler; auto-cancels stalled orders |
+| Stuck saga cleanup | ✅ Active | `StuckSagaCleanupWorker` scans every 5 min; logs Warning when saga age > 3× timeout |
+| Bulkhead isolation | ✅ Active | Per-command-type `SemaphoreSlim`; excess requests return HTTP 503 immediately |
+| Circuit breaker | ✅ Active | Polly 8 `CircuitBreakerStrategyOptions`; opens at 50% failure / 10s window; logs transitions |
+| PgBouncer connection pooling | ✅ Active | Transaction-mode; 5,000 client connections → 200 server connections |
 | Persistent outbox (EF) | 🔲 Roadmap (P0) | Survives process crashes; replaces in-memory outbox |
 | Optimistic concurrency on aggregates | 🔲 Roadmap (P0) | `xmin` column + `ConcurrencyBehavior` |
 
@@ -282,16 +306,17 @@ Every inbound request gets a W3C trace context that propagates through HTTP and 
 |---|---|---|---|
 | P0 | Persistent outbox (EF + dispatcher) replacing in-memory outbox | 🔲 Pending | Crash safety for integration events |
 | P0 | Optimistic concurrency on aggregates (`xmin`) + `ConcurrencyBehavior` | 🔲 Pending | Correct under concurrent writes |
-| P1 | Per-tenant rate limiting at gateway | 🔲 Pending | Hot-tenant isolation |
-| P1 | Cache stampede protection (single-flight) | 🔲 Pending | Hot-key correctness under load |
-| P1 | Global EF query filter for `TenantId` | 🔲 Pending | Remove manual tenant scoping from handlers |
+| P1 | Per-tenant rate limiting at gateway | ✅ Done | Per-tenant sliding window (1,000 req/min) partitioned by `X-Tenant-ID` |
+| P1 | Cache stampede protection (single-flight) | ✅ Done | `HybridCache` provides built-in stampede protection via coalescing |
+| P1 | Global EF query filter for `TenantId` | ✅ Done | `ITenantEntity` + `BaseDbContext` reflection-based filter |
 | P2 | MassTransit Saga for Order → Inventory → Payment workflow | ✅ Done | Long-running cross-service flow with compensation |
 | P2 | Basket → Order checkout integration event | ✅ Done | Full add-to-cart → place-order flow |
 | P2 | Vendor lifecycle (approve, suspend, reactivate) | ✅ Done | Platform-controlled vendor onboarding |
 | P2 | Discount + Coupon engine | ✅ Done | Campaign-driven order value uplift |
 | P2 | Review moderation | ✅ Done | Buyer trust and social proof |
-| P3 | PgBouncer in front of PG | 🔲 Pending | Connection-pool scaling |
-| P3 | OpenTelemetry metrics → Prometheus | 🔲 Pending | Per-service RED metrics dashboard |
+| P3 | PgBouncer in front of PG | ✅ Done | Transaction-mode pool; 5,000 client / 200 server connections |
+| P3 | OpenTelemetry metrics → Prometheus → Grafana | ✅ Done | Runtime + EF Core metrics; OTel Collector fan-out |
+| P3 | Three-layer Polly resilience pipeline | ✅ Done | Bulkhead + Circuit Breaker + Retry; HTTP 503 on saturation/open circuit |
 
 ## 15. Architectural Decisions (key ADRs)
 
@@ -302,7 +327,7 @@ Every inbound request gets a W3C trace context that propagates through HTTP and 
 | 3 | Result pattern over exceptions for business errors | Errors are part of the contract; exceptions are for bugs |
 | 4 | MediatR pipeline behaviors over middleware for domain concerns | Keeps cross-cutting code at the right abstraction layer |
 | 5 | YARP rather than Ocelot or NGINX | First-party .NET, easy to extend with C# |
-| 6 | MassTransit + RabbitMQ rather than a single broker abstraction | Mature .NET ergonomics and Saga support |
+| 6 | MassTransit + Apache Kafka rather than a single broker abstraction | Mature .NET ergonomics, Kafka Rider, and Saga support |
 | 7 | MassTransit Saga (orchestration) over choreography for fulfillment | Explicit state machine gives full visibility into long-running flows; compensating logic stays in one place |
 | 8 | Integration event contracts in `B2B.Shared.Core` | Single canonical source shared by all publishers and consumers; avoids coupling consumers to publisher assemblies |
 | 9 | Redis-only for Basket | Basket is intentionally ephemeral; avoiding a relational schema keeps latency low and removes migration overhead |

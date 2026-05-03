@@ -6,8 +6,8 @@ using PaymentEntity = B2B.Payment.Domain.Entities.Payment;
 
 namespace B2B.Payment.Infrastructure.Persistence;
 
-public sealed class PaymentDbContext(DbContextOptions<PaymentDbContext> options)
-    : BaseDbContext(options)
+public sealed class PaymentDbContext(DbContextOptions<PaymentDbContext> options, IServiceProvider serviceProvider)
+    : BaseDbContext(options, serviceProvider)
 {
     public DbSet<PaymentEntity> Payments => Set<PaymentEntity>();
     public DbSet<Invoice> Invoices => Set<Invoice>();

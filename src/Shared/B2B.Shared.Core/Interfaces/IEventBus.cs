@@ -2,15 +2,18 @@ namespace B2B.Shared.Core.Interfaces;
 
 /// <summary>
 /// Abstraction for publishing integration events across service boundaries via
-/// the message broker (RabbitMQ through MassTransit).
+/// Apache Kafka through MassTransit.
 ///
 /// Integration events differ from domain events: they cross process boundaries
 /// and are serialized over the wire, so they must be stable, versioned contracts
-/// (defined in <c>B2B.Shared.Core.Messaging</c>). Handlers subscribe in
-/// separate microservices or workers.
+/// (defined in <c>B2B.Shared.Core.Messaging</c>). Topic names are defined in
+/// <see cref="B2B.Shared.Core.Messaging.KafkaTopics"/>. Consumers subscribe in
+/// separate microservices or workers via Kafka consumer groups.
 ///
-/// The Infrastructure implementation wraps MassTransit's <c>IPublishEndpoint</c>,
-/// which applies the configured outbox policy to guarantee at-least-once delivery.
+/// The Infrastructure implementation resolves <c>ITopicProducer&lt;T&gt;</c> at runtime.
+/// Services must register producers via <c>AddEventBus(configureRider:)</c> for
+/// cross-service delivery. Without a registered producer the message falls back to
+/// the in-memory bus (suitable for sagas and same-process communication only).
 ///
 /// Usage from a domain event handler:
 /// <code>
@@ -31,6 +34,6 @@ public interface IEventBus
     /// for topic-based or direct exchange routing.
     /// </summary>
     /// <typeparam name="T">The integration event type.</typeparam>
-    /// <param name="routingKey">Optional RabbitMQ routing key. Pass <see langword="null"/> for fanout semantics.</param>
+    /// <param name="routingKey">Optional routing hint (unused in Kafka; reserved for future use). Pass <see langword="null"/> for default routing.</param>
     Task PublishAsync<T>(T message, string? routingKey = null, CancellationToken ct = default) where T : class;
 }

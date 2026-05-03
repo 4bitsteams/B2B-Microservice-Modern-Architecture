@@ -5,7 +5,7 @@ using B2B.Shared.Core.Interfaces;
 
 namespace B2B.Product.Domain.Entities;
 
-public sealed class Product : AggregateRoot<Guid>, IAuditableEntity
+public sealed class Product : AggregateRoot<Guid>, IAuditableEntity, ITenantEntity
 {
     public string Name { get; private set; } = default!;
     public string Description { get; private set; } = string.Empty;

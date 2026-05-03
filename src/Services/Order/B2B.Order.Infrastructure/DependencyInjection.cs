@@ -10,8 +10,10 @@ using B2B.Order.Infrastructure.Persistence;
 using B2B.Order.Infrastructure.Persistence.Repositories;
 using B2B.Order.Infrastructure.Sagas;
 using B2B.Order.Infrastructure.Services;
+using B2B.Order.Infrastructure.Workers;
 using B2B.Product.Infrastructure.Messaging;
 using B2B.Shared.Core.Interfaces;
+using B2B.Shared.Core.Messaging;
 using B2B.Shared.Infrastructure.Extensions;
 
 namespace B2B.Order.Infrastructure;
@@ -52,6 +54,12 @@ public static class DependencyInjection
         services.Configure<OrderFulfillmentSagaOptions>(
             config.GetSection(OrderFulfillmentSagaOptions.SectionName));
 
+        // ── Background workers ─────────────────────────────────────────────────
+        // Scans for saga instances stuck in intermediate states (e.g. broker outage
+        // silenced the reply so the saga timeout never fired). Logs stuck sagas at
+        // Warning so on-call engineers are alerted before they become data leaks.
+        services.AddHostedService<StuckSagaCleanupWorker>();
+
         return services;
     }
 
@@ -88,7 +96,44 @@ public static class DependencyInjection
         // Stub — replace with B2B.Shipping service consumers in production.
         x.AddConsumer<ShipmentConsumer>();
 
-        // ── Basket checkout → Order creation ──────────────────────────────────
-        x.AddConsumer<BasketCheckedOutConsumer>();
+    }
+
+    /// <summary>
+    /// Configures the Kafka Rider for the Order service.
+    ///
+    /// Registers:
+    ///   • <c>BasketCheckedOutConsumer</c> — consumes from the basket-checked-out topic
+    ///     published by the Basket service (cross-process, requires Kafka).
+    ///   • Producers for all order-lifecycle integration events consumed by the
+    ///     Notification Worker and any other downstream services.
+    ///
+    /// Called from <c>Order.Api/Program.cs</c> via the <c>AddEventBus(configureRider:)</c>
+    /// parameter so <c>Program.cs</c> never needs to import consumer or event types directly.
+    /// </summary>
+    public static void ConfigureOrderKafkaRider(IRiderRegistrationConfigurator rider, string bootstrapServers)
+    {
+        // ── Cross-service consumer ─────────────────────────────────────────────
+        // BasketCheckedOut arrives from the Basket service via Kafka — it must be on
+        // the Rider (not the in-memory bus) because it crosses process boundaries.
+        rider.AddConsumer<BasketCheckedOutConsumer>();
+
+        // ── Producers — order lifecycle events ────────────────────────────────
+        rider.AddProducer<OrderConfirmedIntegration>(KafkaTopics.OrderConfirmed);
+        rider.AddProducer<OrderProcessingStartedIntegration>(KafkaTopics.OrderProcessingStarted);
+        rider.AddProducer<OrderPaymentProcessedIntegration>(KafkaTopics.OrderPaymentProcessed);
+        rider.AddProducer<OrderFulfilledIntegration>(KafkaTopics.OrderFulfilled);
+        rider.AddProducer<OrderCancelledDueToStockIntegration>(KafkaTopics.OrderCancelledStock);
+        rider.AddProducer<OrderCancelledDueToPaymentIntegration>(KafkaTopics.OrderCancelledPayment);
+        rider.AddProducer<OrderCancelledDueToShipmentIntegration>(KafkaTopics.OrderCancelledShipment);
+
+        // ── Kafka host + topic endpoints ──────────────────────────────────────
+        rider.UsingKafka((ctx, k) =>
+        {
+            k.Host(bootstrapServers);
+
+            k.TopicEndpoint<BasketCheckedOutIntegration>(
+                KafkaTopics.BasketCheckedOut, "order-service", e =>
+                    e.ConfigureConsumer<BasketCheckedOutConsumer>(ctx));
+        });
     }
 }

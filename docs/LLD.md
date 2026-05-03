@@ -83,6 +83,9 @@ Per-service standard subfolders:
 | Unauthorized | 401 |
 | Forbidden | 403 |
 | Failure | 500 |
+| ServiceUnavailable | 503 |
+
+`Error.ServiceUnavailable(code, description)` is returned by `RetryBehavior` when the bulkhead semaphore is saturated (all concurrency slots occupied) or the circuit breaker is in the Open state.
 
 ### 2.2 Entity, AggregateRoot, ValueObject
 
@@ -127,6 +130,8 @@ public interface IIdempotentCommand  { string IdempotencyKey { get; } }
 | `ICurrentUser` | `UserId`, `TenantId`, `TenantSlug`, `Roles`, `IsAuthenticated`, `IsInRole` |
 | `IPasswordHasher` | `Hash`, `Verify` |
 | `IAuditableEntity` | `CreatedAt`, `UpdatedAt` |
+| `ITenantEntity` | `TenantId { get; }` — marker interface; triggers automatic EF global query filter in `BaseDbContext` |
+| `HybridCache` | .NET 9 `Microsoft.Extensions.Caching.Hybrid` — L1 in-process (2 min) + L2 Redis (15 min); inject directly into query handlers |
 
 ## 3. MediatR Pipeline
 
@@ -150,7 +155,20 @@ Request
 Logs `{RequestName}` + elapsed milliseconds at Information level around `next()`.
 
 ### 3.2 RetryBehavior
-Retries the inner pipeline on transient failures with exponential back-off. Wraps the remainder of the pipeline so transient faults in any downstream behavior or handler are eligible for retry.
+
+Three-layer Polly 8 resilience pipeline wrapping the rest of the pipeline:
+
+```
+Request → [Bulkhead] → [Circuit Breaker] → [Retry] → next()
+```
+
+| Layer | Implementation | Behaviour on saturation/open |
+|---|---|---|
+| **Bulkhead** | `CommandBulkheadProvider` — singleton `ConcurrentDictionary<Type, SemaphoreSlim>` (one semaphore per command type). `WaitAsync(0)` — non-blocking | Returns `Error.ServiceUnavailable` (HTTP 503) immediately |
+| **Circuit Breaker** | `CircuitBreakerStrategyOptions<TResponse>` — opens at `FailureRatio` 0.5 over `SamplingDuration` 10s (`MinimumThroughput` 5); breaks for 30s | Returns `Error.ServiceUnavailable` (HTTP 503); logs OPEN/HALF-OPEN/CLOSED transitions |
+| **Retry** | Exponential back-off + jitter; configurable `MaxRetryAttempts` (default 3) + `BackoffType` (Exponential) | Retries on `Exception`; does not retry `Result.Failure` |
+
+Configuration is bound from `appsettings.json` section `"RetryBehavior"` into `RetryBehaviorOptions`.
 
 ### 3.3 IdempotencyBehavior
 
@@ -233,15 +251,40 @@ Applies to all files under `B2B.Vendor.*`. The `Vendor` name is both the namespa
 | Concern | Convention |
 |---|---|
 | PK | `Guid` generated client-side in the static factory (`Guid.NewGuid()`) |
-| Tenant scoping | Every aggregate carries `TenantId`; every query filters on it |
+| Tenant scoping | Aggregates implement `ITenantEntity`; `BaseDbContext.OnModelCreating` applies a `HasQueryFilter` via reflection — **no per-query `.Where(e => e.TenantId == ...)` needed**. Background services (e.g. `StuckSagaCleanupWorker`) call `IgnoreQueryFilters()` explicitly to scan all tenants. |
 | Soft delete | Not currently implemented |
 | Auditing | `IAuditableEntity { CreatedAt, UpdatedAt }` — set by domain factories |
 | Migrations | Per-service EF migrations under `Persistence/Migrations/` |
-| Connection | Npgsql with `EnableRetryOnFailure(3)`, command timeout 30s |
+| Connection | Npgsql with `EnableRetryOnFailure(3)`, command timeout 30s; all services connect via PgBouncer `:6432` (transaction mode) |
 
 ## 6. Caching
 
-`ICacheService` (Redis-backed in production, swappable for tests) implements cache-aside:
+Two complementary cache layers are active simultaneously.
+
+### 6.1 HybridCache (L1 + L2) — preferred for query handlers
+
+`Microsoft.Extensions.Caching.Hybrid` 9.0.3 provides:
+- **L1**: in-process memory cache (2 min TTL) — zero network round-trip for the hottest keys.
+- **L2**: Redis distributed cache (15 min TTL) — shared across all replicas.
+- **Stampede protection**: built-in coalescing; only one thread calls the factory when the cache is cold.
+
+```csharp
+// Inject HybridCache directly (registered as singleton by AddHybridCache)
+public sealed class GetProductsHandler(HybridCache hybridCache, IReadOrderRepository repo)
+{
+    public async Task<Result<PagedList<ProductDto>>> Handle(GetProductsQuery q, CancellationToken ct)
+    {
+        return await hybridCache.GetOrCreateAsync(
+            $"products:tenant:{tenantId}:page:{q.Page}",
+            async cancel => await repo.GetPagedAsync(..., cancel),
+            cancellationToken: ct);
+    }
+}
+```
+
+### 6.2 ICacheService (Redis cache-aside) — fine-grained control
+
+`ICacheService` (backed by `RedisCacheService`) implements cache-aside for scenarios that require custom TTLs or prefix-based invalidation:
 
 ```csharp
 var products = await cache.GetOrCreateAsync(
@@ -262,7 +305,7 @@ await cache.RemoveByPrefixAsync($"products:tenant:{tenantId}");
 | | Domain Event | Integration Event |
 |---|---|---|
 | Scope | Inside one service | Across services |
-| Transport | MediatR `INotification` | RabbitMQ via MassTransit |
+| Transport | MediatR `INotification` | Apache Kafka via MassTransit Kafka Rider |
 | Example | `OrderConfirmedEvent` | `OrderConfirmedIntegration` |
 
 ### 7.2 Integration event contracts
@@ -311,11 +354,25 @@ public sealed record ProductLowStockIntegration(Guid ProductId, string Sku, int 
 
 ### 7.4 MassTransit configuration
 
-`AddEventBus(...)` extension wires:
+`AddEventBus(configureRider: ...)` extension wires:
 ```csharp
-cfg.UseMessageRetry(r => r.Intervals(100, 500, 1000, 2000, 5000));
-cfg.UseInMemoryOutbox(ctx);
-cfg.ConfigureEndpoints(ctx);
+// Base bus — in-memory (sagas, stub consumers, same-process commands)
+x.UsingInMemory((ctx, cfg) =>
+{
+    cfg.UseMessageRetry(r => r.Intervals(100, 500, 1000, 2000, 5000));
+    cfg.UseInMemoryOutbox(ctx);
+    cfg.ConfigureEndpoints(ctx);
+});
+
+// Kafka Rider — cross-service integration events
+x.AddRider(r =>
+{
+    r.UsingKafka((ctx, k) =>
+    {
+        k.Host(bootstrapServers);
+        configureRider?.Invoke(k);   // per-service topic endpoints
+    });
+});
 ```
 
 ## 8. Identity & Authentication
@@ -362,16 +419,16 @@ sequenceDiagram
   participant GW as Gateway
   participant Ba as Basket API
   participant Bus as IEventBus
-  participant RMQ as RabbitMQ
+  participant KF as Kafka
   participant Or as Order Saga / Consumer
 
   Buyer->>GW: POST /api/basket/checkout
   GW->>Ba: forward
   Ba->>Ba: validate basket (non-empty, coupon if any)
   Ba->>Bus: PublishAsync(BasketCheckedOutIntegration)
-  Bus->>RMQ: deliver
+  Bus->>KF: deliver to topic b2b-basket-checked-out
   Ba-->>Buyer: 202 Accepted
-  RMQ->>Or: BasketCheckedOutConsumer → creates Order
+  KF->>Or: BasketCheckedOutConsumer → creates Order
 ```
 
 ## 11. Adding a New Command (recipe)
@@ -408,7 +465,7 @@ sequenceDiagram
 | Application handlers | xUnit + NSubstitute + Bogus | Handler logic with mocked ports; Result types for both success and each error branch |
 | Application authorizers | xUnit + NSubstitute | All authorized paths (by role, by ownership), plus the denied path |
 | Application validators | xUnit + FluentValidation.TestHelper | Field-level rules, boundary values |
-| Infrastructure | xUnit + Testcontainers PG/Redis/RabbitMQ | Real EF queries, real MassTransit consumers |
+| Infrastructure | xUnit + Testcontainers PG/Redis/Kafka | Real EF queries, real MassTransit consumers |
 | API | (planned) `WebApplicationFactory<T>` | Auth, routing, status code mapping |
 
 ### Current test counts
@@ -472,9 +529,14 @@ public sealed class RegisterVendorValidatorTests
 
 ## 14. Observability Specifics
 
-- Every `Program.cs` calls `AddOpenTelemetry(config, "B2B.{Svc}")`. Service name flows into Jaeger as `service.name`.
+- Every `Program.cs` calls `AddServiceOpenTelemetry(config, "B2B.{Svc}")`. Service name flows into Jaeger as `service.name`.
+- **Traces**: ASP.NET Core + HttpClient + EF Core instrumented → OTLP (gRPC `:4317`) → OTel Collector → Jaeger.
+- **Metrics**: Runtime + EF Core instrumented → OTLP → OTel Collector → Prometheus scrape endpoint `:8889` → Grafana.
 - `LoggingBehavior` emits `Handled {Request} in {Elapsed}ms`.
-- Health endpoint at `/health` returns the standard `UIResponseWriter` JSON.
+- Health endpoints:
+  - `/health/live` — returns `200 Healthy` with no dependency checks (liveness probe).
+  - `/health/ready` — checks PostgreSQL + Redis + RabbitMQ tagged `"ready"` (readiness probe).
+  - `/health` — legacy all-checks endpoint with `UIResponseWriter` JSON.
 
 ## 15. Configuration & Secrets
 
@@ -487,10 +549,10 @@ Local-dev defaults live in `docker-compose.override.yml`. Production secrets are
 
 ### Notable `IOptions<>` sections
 
-| Class | Section key |
-|---|---|
-| `RetryBehaviorOptions` | `"RetryBehavior"` |
-| `OrderFulfillmentSagaOptions` | `"OrderFulfillmentSaga"` |
+| Class | Section key | Key settings |
+|---|---|---|
+| `RetryBehaviorOptions` | `"RetryBehavior"` | `MaxRetryAttempts`, `CircuitBreakerFailureRatio`, `CircuitBreakerBreakDurationSeconds`, `BulkheadMaxConcurrency` |
+| `OrderFulfillmentSagaOptions` | `"OrderFulfillmentSaga"` | `StockReservationDeadline`, `PaymentDeadline`, `ShipmentDeadline` |
 
 ## 16. Known Limitations
 
@@ -498,7 +560,6 @@ Local-dev defaults live in `docker-compose.override.yml`. Production secrets are
 |---|---|
 | In-memory MassTransit outbox loses messages on crash | HLD §13 (P0) |
 | No optimistic concurrency token on aggregates | HLD §13 (P0) |
-| No per-tenant rate limiting | HLD §14 (P1) |
-| No global query filter for `TenantId` (manual today) | §5 |
 | Auditing fields set by hand in factories rather than an interceptor | §5 |
 | Basket is ephemeral — lost on Redis restart | By design (BRD FR-BS-7) |
+| PgBouncer transaction mode incompatible with EF prepared statements | Set `No Reset On Close=true` in Npgsql connection string when using PgBouncer |

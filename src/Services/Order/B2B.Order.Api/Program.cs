@@ -32,17 +32,20 @@ builder.Services
 
 // ── MassTransit: saga + consumers registered via Infrastructure façade ────────
 //
-// DIP — Program.cs never imports Product.Infrastructure, saga framework types,
-// or individual consumer classes.  All concrete registrations live in
-// DependencyInjection.ConfigureOrderBusParticipants (Infrastructure layer).
+// DIP — Program.cs never imports saga framework types or individual consumer
+// classes.  All concrete registrations live in the Infrastructure layer:
 //
-// Timeout scheduling uses the RabbitMQ delayed message exchange plugin.
-// For higher reliability in production, replace with Quartz.NET:
-//   x.AddQuartzConsumers();  cfg.UseMessageScheduler(new Uri("queue:quartz"));
+//   ConfigureOrderBusParticipants — saga + co-located stubs (in-memory bus)
+//   ConfigureOrderKafkaRider      — cross-service consumers + producers (Kafka)
+//
+// Saga timeout scheduling uses the in-memory bus built-in scheduler.
+// For production multi-node deployments, switch to Quartz.NET:
+//   x.AddQuartzConsumers(); cfg.UseMessageScheduler(new Uri("queue:quartz"));
+var kafkaBootstrap = builder.Configuration["Kafka:BootstrapServers"] ?? "localhost:9092";
 builder.Services.AddEventBus(
     builder.Configuration,
     configureConsumers: DependencyInjection.ConfigureOrderBusParticipants,
-    configureRabbitMq:  cfg => cfg.UseDelayedMessageScheduler());
+    configureRider: rider => DependencyInjection.ConfigureOrderKafkaRider(rider, kafkaBootstrap));
 
 var app = builder.Build();
 

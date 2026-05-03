@@ -6,8 +6,8 @@ using DiscountEntity = B2B.Discount.Domain.Entities.Discount;
 
 namespace B2B.Discount.Infrastructure.Persistence;
 
-public sealed class DiscountDbContext(DbContextOptions<DiscountDbContext> options)
-    : BaseDbContext(options)
+public sealed class DiscountDbContext(DbContextOptions<DiscountDbContext> options, IServiceProvider serviceProvider)
+    : BaseDbContext(options, serviceProvider)
 {
     public DbSet<DiscountEntity> Discounts => Set<DiscountEntity>();
     public DbSet<Coupon> Coupons => Set<Coupon>();

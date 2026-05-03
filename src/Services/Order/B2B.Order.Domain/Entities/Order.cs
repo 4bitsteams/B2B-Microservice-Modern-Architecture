@@ -5,7 +5,7 @@ using B2B.Shared.Core.Interfaces;
 
 namespace B2B.Order.Domain.Entities;
 
-public sealed class Order : AggregateRoot<Guid>, IAuditableEntity
+public sealed class Order : AggregateRoot<Guid>, IAuditableEntity, ITenantEntity
 {
     public string OrderNumber { get; private set; } = default!;
     public Guid CustomerId { get; private set; }

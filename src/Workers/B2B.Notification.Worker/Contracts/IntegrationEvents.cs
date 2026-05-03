@@ -1,8 +1,9 @@
 namespace B2B.Notification.Worker.Contracts;
 
-// Integration events received from Order and Identity services via RabbitMQ.
+// Integration events received from Order, Identity, and Product services via Apache Kafka.
 // These are local copies — the worker deliberately does not reference B2B.Shared.Core
-// to avoid tight coupling.  Keep these in sync with the shared contracts.
+// to avoid tight coupling.  Keep these in sync with the shared contracts in
+// B2B.Shared.Core.Messaging.IntegrationEvents and topic names in KafkaTopics.
 
 // ── Order lifecycle ───────────────────────────────────────────────────────────
 

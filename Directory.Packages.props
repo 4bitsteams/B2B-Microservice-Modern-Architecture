@@ -27,7 +27,7 @@
 
   <ItemGroup Label="Messaging">
     <PackageVersion Include="MassTransit" Version="8.3.6" />
-    <PackageVersion Include="MassTransit.RabbitMQ" Version="8.3.6" />
+    <PackageVersion Include="MassTransit.Kafka" Version="8.3.6" />
     <PackageVersion Include="MassTransit.EntityFrameworkCore" Version="8.3.6" />
   </ItemGroup>
 
@@ -74,7 +74,6 @@
     <PackageVersion Include="AspNetCore.HealthChecks.UI.InMemory.Storage" Version="9.0.0" />
     <PackageVersion Include="AspNetCore.HealthChecks.NpgSql" Version="9.0.0" />
     <PackageVersion Include="AspNetCore.HealthChecks.Redis" Version="9.0.0" />
-    <PackageVersion Include="AspNetCore.HealthChecks.Rabbitmq" Version="9.0.0" />
   </ItemGroup>
 
   <ItemGroup Label="Security">
@@ -98,6 +97,6 @@
     <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="9.0.3" />
     <PackageVersion Include="Testcontainers.PostgreSql" Version="4.1.0" />
     <PackageVersion Include="Testcontainers.Redis" Version="4.1.0" />
-    <PackageVersion Include="Testcontainers.RabbitMq" Version="4.1.0" />
+    <PackageVersion Include="Testcontainers.Kafka" Version="4.1.0" />
   </ItemGroup>
 </Project>

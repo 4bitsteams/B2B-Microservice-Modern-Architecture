@@ -5,8 +5,8 @@ using VendorEntity = B2B.Vendor.Domain.Entities.Vendor;
 
 namespace B2B.Vendor.Infrastructure.Persistence;
 
-public sealed class VendorDbContext(DbContextOptions<VendorDbContext> options)
-    : BaseDbContext(options)
+public sealed class VendorDbContext(DbContextOptions<VendorDbContext> options, IServiceProvider serviceProvider)
+    : BaseDbContext(options, serviceProvider)
 {
     public DbSet<VendorEntity> Vendors => Set<VendorEntity>();
 

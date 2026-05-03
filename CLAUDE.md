@@ -194,7 +194,7 @@ public async Task<IActionResult> Create(CreateOrderCommand cmd)
 // Observer — aggregate raises event; notification worker reacts independently
 order.Confirm();  // raises OrderConfirmedEvent internally
 // → DomainEventBehavior publishes it after SaveChangesAsync
-// → Notification Worker consumes OrderConfirmedIntegration via RabbitMQ
+// → Notification Worker consumes OrderConfirmedIntegration via Kafka topic
 
 // Strategy — swap password hasher with zero handler changes
 services.AddScoped<IPasswordHasher, BcryptPasswordHasher>(); // or ArgonPasswordHasher
@@ -363,7 +363,7 @@ await cache.RemoveByPrefixAsync($"products:tenant:{tenantId}");
 
 ### Integration Events (cross-service messaging)
 
-Integration events are separate from domain events — they cross service boundaries via RabbitMQ.
+Integration events are separate from domain events — they cross service boundaries via Apache Kafka.
 
 ```csharp
 // Publisher (inside a domain event handler or consumer)
@@ -452,7 +452,8 @@ using HealthChecks.UI.Client; // correct
 | Order      | ASP.NET Core 9 + EF Core 9        | 5003  |
 | Database   | PostgreSQL 16                     | 5432  |
 | Cache      | Redis 7                           | 6379  |
-| Messaging  | RabbitMQ 3 (MassTransit)          | 5672  |
+| Messaging  | Apache Kafka 3.7 KRaft (MassTransit) | 9092  |
+| Kafka UI   | provectuslabs/kafka-ui            | 8090  |
 | Tracing    | Jaeger                            | 16686 |
 | Logging    | Seq                               | 5341  |
 | Email      | MailHog (dev)                     | 8025  |

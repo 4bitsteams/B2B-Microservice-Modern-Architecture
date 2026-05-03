@@ -3,6 +3,7 @@ using Scalar.AspNetCore;
 using Serilog;
 using B2B.Basket.Application.Commands.AddToBasket;
 using B2B.Basket.Infrastructure.Extensions;
+using B2B.Shared.Core.Messaging;
 using B2B.Shared.Infrastructure.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -27,7 +28,14 @@ builder.Services
     .AddSharedInfrastructure(builder.Configuration, "B2B.Basket", assemblies)
     .AddBasketInfrastructure();
 
-builder.Services.AddEventBus(builder.Configuration);
+// Register Kafka producer so IEventBus.PublishAsync<BasketCheckedOutIntegration>
+// delivers to the Kafka topic consumed by the Order service.
+var kafkaBootstrap = builder.Configuration["Kafka:BootstrapServers"] ?? "localhost:9092";
+builder.Services.AddEventBus(builder.Configuration, configureRider: rider =>
+{
+    rider.AddProducer<BasketCheckedOutIntegration>(KafkaTopics.BasketCheckedOut);
+    rider.UsingKafka((_, k) => k.Host(kafkaBootstrap));
+});
 
 var app = builder.Build();
 

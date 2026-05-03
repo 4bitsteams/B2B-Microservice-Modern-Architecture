@@ -6,8 +6,8 @@ using ShipmentEntity = B2B.Shipping.Domain.Entities.Shipment;
 
 namespace B2B.Shipping.Infrastructure.Persistence;
 
-public sealed class ShipmentDbContext(DbContextOptions<ShipmentDbContext> options)
-    : BaseDbContext(options)
+public sealed class ShipmentDbContext(DbContextOptions<ShipmentDbContext> options, IServiceProvider serviceProvider)
+    : BaseDbContext(options, serviceProvider)
 {
     public DbSet<ShipmentEntity> Shipments => Set<ShipmentEntity>();
 

@@ -4,7 +4,7 @@ using B2B.Shared.Core.Interfaces;
 
 namespace B2B.Identity.Domain.Entities;
 
-public sealed class User : AggregateRoot<Guid>, IAuditableEntity
+public sealed class User : AggregateRoot<Guid>, IAuditableEntity, ITenantEntity
 {
     public string FirstName { get; private set; } = default!;
     public string LastName { get; private set; } = default!;
