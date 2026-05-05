@@ -46,7 +46,10 @@ public sealed class CreateOrderHandler(
         var taxRate = await taxService.GetTaxRateAsync(currentUser.TenantId, ct: cancellationToken);
         order.ApplyTaxRate(taxRate);
 
-        order.Confirm();
+        // A freshly created order is always Pending; propagate defensively.
+        var confirmResult = order.Confirm();
+        if (confirmResult.IsFailure)
+            return confirmResult.Error;
 
         await orderRepository.AddAsync(order, cancellationToken);
         await unitOfWork.SaveChangesAsync(cancellationToken);

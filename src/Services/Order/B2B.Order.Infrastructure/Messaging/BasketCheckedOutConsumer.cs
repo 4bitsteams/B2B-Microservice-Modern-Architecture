@@ -58,8 +58,11 @@ public sealed class BasketCheckedOutConsumer(
         var taxRate = await taxService.GetTaxRateAsync(msg.TenantId, ct: ct);
         order.ApplyTaxRate(taxRate);
 
-        // Confirm immediately — raises OrderConfirmedEvent internally
-        order.Confirm();
+        // Confirm immediately — raises OrderConfirmedEvent internally.
+        // A freshly created order is always Pending; guard against invariant drift.
+        var confirmResult = order.Confirm();
+        if (confirmResult.IsFailure)
+            throw new InvalidOperationException($"Order confirmation failed: {confirmResult.Error.Description}");
 
         await orderRepository.AddAsync(order, ct);
         await unitOfWork.SaveChangesAsync(ct);

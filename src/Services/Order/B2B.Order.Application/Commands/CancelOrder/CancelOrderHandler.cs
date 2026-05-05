@@ -19,14 +19,9 @@ public sealed class CancelOrderHandler(
         if (order is null || order.TenantId != currentUser.TenantId)
             return Error.NotFound("Order.NotFound", $"Order {request.OrderId} not found.");
 
-        try
-        {
-            order.Cancel(request.Reason);
-        }
-        catch (InvalidOperationException ex)
-        {
-            return Error.Validation("Order.InvalidStatus", ex.Message);
-        }
+        var result = order.Cancel(request.Reason);
+        if (result.IsFailure)
+            return result.Error;
 
         orderRepository.Update(order);
         await unitOfWork.SaveChangesAsync(cancellationToken);

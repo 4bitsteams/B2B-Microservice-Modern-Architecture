@@ -17,18 +17,14 @@ public sealed class ApplyCouponHandler(
         if (coupon is null)
             return Error.NotFound("Coupon.NotFound", $"Coupon '{request.CouponCode}' not found.");
 
-        if (!coupon.IsAvailable)
-            return Error.Validation("Coupon.NotAvailable", "This coupon is not available or has expired.");
-
-        decimal discounted;
-        try { discounted = coupon.Apply(request.OrderAmount); }
-        catch (InvalidOperationException ex)
-        { return Error.Validation("Coupon.InvalidApplication", ex.Message); }
+        var applyResult = coupon.Apply(request.OrderAmount);
+        if (applyResult.IsFailure)
+            return applyResult.Error;
 
         couponRepository.Update(coupon);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
-        return new ApplyCouponResponse(coupon.Code, request.OrderAmount, discounted,
-            Math.Round(request.OrderAmount - discounted, 2));
+        return new ApplyCouponResponse(coupon.Code, request.OrderAmount, applyResult.Value,
+            Math.Round(request.OrderAmount - applyResult.Value, 2));
     }
 }

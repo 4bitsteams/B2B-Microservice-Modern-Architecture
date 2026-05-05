@@ -1,4 +1,5 @@
 using B2B.Discount.Domain.Events;
+using B2B.Shared.Core.Common;
 using B2B.Shared.Core.Domain;
 using B2B.Shared.Core.Interfaces;
 
@@ -53,12 +54,12 @@ public sealed class Coupon : AggregateRoot<Guid>, IAuditableEntity
         return coupon;
     }
 
-    public decimal Apply(decimal orderAmount)
+    public Result<decimal> Apply(decimal orderAmount)
     {
         if (!IsAvailable)
-            throw new InvalidOperationException("Coupon is not available.");
+            return Error.Validation("Coupon.NotAvailable", "Coupon is not available or has expired.");
         if (MinimumOrderAmount.HasValue && orderAmount < MinimumOrderAmount.Value)
-            throw new InvalidOperationException($"Order amount must be at least {MinimumOrderAmount:C}.");
+            return Error.Validation("Coupon.MinimumOrderAmount", $"Order amount must be at least {MinimumOrderAmount:C}.");
 
         UsageCount++;
         if (IsSingleUse) IsActive = false;

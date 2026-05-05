@@ -1,5 +1,6 @@
 using B2B.Order.Domain.Events;
 using B2B.Order.Domain.ValueObjects;
+using B2B.Shared.Core.Common;
 using B2B.Shared.Core.Domain;
 using B2B.Shared.Core.Interfaces;
 
@@ -35,6 +36,8 @@ public sealed class Order : AggregateRoot<Guid>, IAuditableEntity, ITenantEntity
     public decimal ShippingCost { get; private set; }
     public decimal TotalAmount => Subtotal + TaxAmount + ShippingCost;
     public int ItemCount => _items.Sum(i => i.Quantity);
+
+    private const string InvalidStatusCode = "Order.InvalidStatus";
 
     private Order() { }
 
@@ -97,52 +100,58 @@ public sealed class Order : AggregateRoot<Guid>, IAuditableEntity, ITenantEntity
         _items.Remove(item);
     }
 
-    public void Confirm()
+    public Result Confirm()
     {
-        EnsureStatus(OrderStatus.Pending);
+        if (Status != OrderStatus.Pending)
+            return Error.Validation(InvalidStatusCode, $"Order must be in '{OrderStatus.Pending}' status. Current: '{Status}'.");
+
         Status = OrderStatus.Confirmed;
-        RaiseDomainEvent(new OrderConfirmedEvent(Id, OrderNumber, CustomerId, TenantId, TotalAmount, _items
-            .Select(i => new OrderItemDetails(i.ProductId, i.Sku, i.Quantity))
-            .ToList()));
+        RaiseDomainEvent(new OrderConfirmedEvent(Id, OrderNumber, CustomerId, TenantId, TotalAmount,
+            [.. _items.Select(i => new OrderItemDetails(i.ProductId, i.Sku, i.Quantity))]));
+        return Result.Success();
     }
 
-    public void StartProcessing()
+    public Result StartProcessing()
     {
-        EnsureStatus(OrderStatus.Confirmed);
+        if (Status != OrderStatus.Confirmed)
+            return Error.Validation(InvalidStatusCode, $"Order must be in '{OrderStatus.Confirmed}' status. Current: '{Status}'.");
+
         Status = OrderStatus.Processing;
+        return Result.Success();
     }
 
-    public void Ship(string trackingNumber)
+    public Result Ship(string trackingNumber)
     {
-        EnsureStatus(OrderStatus.Processing);
+        if (Status != OrderStatus.Processing)
+            return Error.Validation(InvalidStatusCode, $"Order must be in '{OrderStatus.Processing}' status. Current: '{Status}'.");
+
         Status = OrderStatus.Shipped;
         TrackingNumber = trackingNumber;
         ShippedAt = DateTime.UtcNow;
         RaiseDomainEvent(new OrderShippedEvent(Id, OrderNumber, CustomerId, trackingNumber));
+        return Result.Success();
     }
 
-    public void Deliver()
+    public Result Deliver()
     {
-        EnsureStatus(OrderStatus.Shipped);
+        if (Status != OrderStatus.Shipped)
+            return Error.Validation(InvalidStatusCode, $"Order must be in '{OrderStatus.Shipped}' status. Current: '{Status}'.");
+
         Status = OrderStatus.Delivered;
         DeliveredAt = DateTime.UtcNow;
         RaiseDomainEvent(new OrderDeliveredEvent(Id, OrderNumber, CustomerId));
+        return Result.Success();
     }
 
-    public void Cancel(string reason)
+    public Result Cancel(string reason)
     {
         if (Status is OrderStatus.Delivered or OrderStatus.Cancelled)
-            throw new InvalidOperationException($"Cannot cancel order in status '{Status}'.");
+            return Error.Validation(InvalidStatusCode, $"Cannot cancel order in status '{Status}'.");
 
         Status = OrderStatus.Cancelled;
         CancellationReason = reason;
         CancelledAt = DateTime.UtcNow;
         RaiseDomainEvent(new OrderCancelledEvent(Id, OrderNumber, CustomerId, reason));
-    }
-
-    private void EnsureStatus(OrderStatus expected)
-    {
-        if (Status != expected)
-            throw new InvalidOperationException($"Order must be in '{expected}' status. Current: '{Status}'.");
+        return Result.Success();
     }
 }
