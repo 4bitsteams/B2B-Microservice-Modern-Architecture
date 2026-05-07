@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using MediatR;
 using Microsoft.Extensions.Logging;
@@ -21,6 +22,14 @@ public sealed class IdempotencyBehavior<TRequest, TResponse>(
         PropertyNameCaseInsensitive = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
+
+    // Computed once per TResponse — avoids per-call GetProperty reflection on the cache-write path.
+    // Non-null only when TResponse is Result<T>; null for non-generic Result (no value to snapshot).
+    private static readonly PropertyInfo? ValueProperty =
+        typeof(TResponse).IsGenericType &&
+        typeof(TResponse).GetGenericTypeDefinition() == typeof(Result<>)
+            ? typeof(TResponse).GetProperty(nameof(Result<object>.Value))
+            : null;
 
     public async Task<TResponse> Handle(
         TRequest request,
@@ -51,16 +60,13 @@ public sealed class IdempotencyBehavior<TRequest, TResponse>(
 
     private static IdempotencyRecord Capture(TResponse response)
     {
-        var responseType = response.GetType();
         JsonElement? value = null;
 
-        if (responseType.IsGenericType &&
-            responseType.GetGenericTypeDefinition() == typeof(Result<>))
+        if (ValueProperty is not null)
         {
-            var prop = responseType.GetProperty(nameof(Result<object>.Value))!;
-            var raw = prop.GetValue(response);
+            var raw = ValueProperty.GetValue(response);
             if (raw is not null)
-                value = JsonSerializer.SerializeToElement(raw, prop.PropertyType, JsonOptions);
+                value = JsonSerializer.SerializeToElement(raw, ValueProperty.PropertyType, JsonOptions);
         }
 
         return new IdempotencyRecord(response.IsSuccess, response.Error, value);
@@ -72,11 +78,11 @@ public sealed class IdempotencyBehavior<TRequest, TResponse>(
             return ResultHelper.Failure<TResponse>(record.Error);
 
         // Non-generic Result: no value to deserialize.
-        if (typeof(TResponse) == typeof(Result))
+        if (ValueProperty is null)
             return ResultHelper.Success<TResponse>();
 
         // Result<T>: deserialize the cached JSON value.
-        var innerType = typeof(TResponse).GetGenericArguments()[0];
+        var innerType = ValueProperty.PropertyType;
         var value = record.Value.HasValue
             ? record.Value.Value.Deserialize(innerType, JsonOptions)
             : null;

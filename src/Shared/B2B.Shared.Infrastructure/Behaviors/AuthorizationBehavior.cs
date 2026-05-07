@@ -42,6 +42,9 @@ public sealed class AuthorizationBehavior<TRequest, TResponse>(
     where TRequest : notnull
     where TResponse : notnull
 {
+    // Computed once per closed generic type — avoids a runtime IsAssignableTo check on every request.
+    private static readonly bool IsResultResponse = ResultHelper.IsResultResponse<TResponse>();
+
     public async Task<TResponse> Handle(
         TRequest request,
         RequestHandlerDelegate<TResponse> next,
@@ -68,9 +71,7 @@ public sealed class AuthorizationBehavior<TRequest, TResponse>(
 
         var error = Error.Forbidden("Authorization.Failed", reason);
 
-        // Result and Result<T> — delegate to ResultHelper (cached reflection).
-        // TResponse is only constrained to notnull here, so use the non-generic overload.
-        if (typeof(TResponse).IsAssignableTo(typeof(Result)))
+        if (IsResultResponse)
             return (TResponse)ResultHelper.Failure(typeof(TResponse), error);
 
         // Non-Result response type — cannot express authorization failure; log and continue.

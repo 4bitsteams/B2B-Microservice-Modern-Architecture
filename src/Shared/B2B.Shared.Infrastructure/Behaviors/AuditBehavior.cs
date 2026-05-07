@@ -2,7 +2,6 @@ using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using MediatR;
 using B2B.Shared.Core.Common;
-using B2B.Shared.Core.CQRS;
 using B2B.Shared.Core.Interfaces;
 
 namespace B2B.Shared.Infrastructure.Behaviors;
@@ -30,10 +29,8 @@ public sealed class AuditBehavior<TRequest, TResponse>(
     : IPipelineBehavior<TRequest, TResponse>
     where TRequest : notnull
 {
-    // Computed once per closed generic type by the JIT — zero allocation on hot path.
-    private static readonly bool IsCommand = typeof(TRequest).GetInterfaces()
-        .Any(i => i == typeof(ICommand) ||
-                  (i.IsGenericType && i.GetGenericTypeDefinition() == typeof(ICommand<>)));
+    // Computed once per closed generic type via ResultHelper's JIT-static cache — zero allocation on hot path.
+    private static readonly bool IsCommand = ResultHelper.IsCommandRequest<TRequest>();
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {

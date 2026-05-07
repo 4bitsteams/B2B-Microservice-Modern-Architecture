@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using B2B.Shared.Core.Common;
+using B2B.Shared.Core.CQRS;
 
 namespace B2B.Shared.Infrastructure.Behaviors;
 
@@ -13,18 +14,31 @@ namespace B2B.Shared.Infrastructure.Behaviors;
 /// type</b>: the compiled delegate is stored in a <see cref="ConcurrentDictionary{TKey,TValue}"/>
 /// keyed by <see cref="Type"/>, so subsequent calls are allocation-free dictionary lookups.
 ///
+/// TYPE CLASSIFICATION
+/// ───────────────────
+/// <c>RequestTypeCache&lt;T&gt;</c> and <c>ResultTypeCache&lt;T&gt;</c> use the JIT's
+/// per-generic-instantiation static-field guarantee as a zero-allocation alternative to
+/// <c>ConcurrentDictionary</c> for boolean type checks shared across pipeline behaviors.
+/// Each unique <c>T</c> is evaluated exactly once with no locking overhead.
+///
 /// USAGE
 /// ─────
 /// <code>
-/// // In a pipeline behavior:
+/// // Result factories — in a pipeline behavior:
 /// return ResultHelper.Failure&lt;TResponse&gt;(Error.Forbidden("Auth.Failed", reason));
 /// return ResultHelper.Success&lt;TResponse&gt;(deserializedValue);
+///
+/// // Type classification — eliminates per-behavior duplication:
+/// if (!ResultHelper.IsCommandRequest&lt;TRequest&gt;()) return await next();
+/// if (ResultHelper.IsResultResponse&lt;TResponse&gt;()) return (TResponse)ResultHelper.Failure(...);
 /// </code>
 ///
 /// This eliminates the duplicated reflection blocks that previously existed in
 /// <see cref="ValidationBehavior{TRequest,TResponse}"/>,
-/// <see cref="AuthorizationBehavior{TRequest,TResponse}"/>, and
-/// <see cref="IdempotencyBehavior{TRequest,TResponse}"/>.
+/// <see cref="AuthorizationBehavior{TRequest,TResponse}"/>,
+/// <see cref="IdempotencyBehavior{TRequest,TResponse}"/>,
+/// <see cref="AuditBehavior{TRequest,TResponse}"/>, and
+/// <see cref="RetryBehavior{TRequest,TResponse}"/>.
 /// </summary>
 internal static class ResultHelper
 {
@@ -79,11 +93,50 @@ internal static class ResultHelper
             return _ => Result.Success();
 
         var inner = resultType.GetGenericArguments()[0];
+        // Single() is deliberate: Result must have exactly one generic Success overload.
+        // First() would silently pick the wrong overload if the API ever gains a second.
         var method = typeof(Result)
             .GetMethods()
-            .First(m => m.Name == nameof(Result.Success) && m.IsGenericMethod)
+            .Single(m => m.Name == nameof(Result.Success) && m.IsGenericMethodDefinition)
             .MakeGenericMethod(inner);
 
         return value => method.Invoke(null, [value])!;
+    }
+
+    // ── Type classification ───────────────────────────────────────────────────
+    // Uses the JIT's static-field-per-generic-instantiation guarantee so each
+    // unique T is computed exactly once — no ConcurrentDictionary, no locking.
+
+    /// <summary>
+    /// <see langword="true"/> when <typeparamref name="TRequest"/> implements
+    /// <see cref="ICommand"/> or <see cref="ICommand{TResponse}"/>.
+    /// </summary>
+    internal static bool IsCommandRequest<TRequest>() => RequestTypeCache<TRequest>.IsCommand;
+
+    /// <summary>
+    /// <see langword="true"/> when <typeparamref name="TRequest"/> implements
+    /// <see cref="IQuery{TResponse}"/>.
+    /// </summary>
+    internal static bool IsQueryRequest<TRequest>() => RequestTypeCache<TRequest>.IsQuery;
+
+    /// <summary>
+    /// <see langword="true"/> when <typeparamref name="TResponse"/> is or derives from
+    /// <see cref="Result"/> — i.e. it can carry a failure value back to the caller.
+    /// </summary>
+    internal static bool IsResultResponse<TResponse>() => ResultTypeCache<TResponse>.IsResult;
+
+    private static class RequestTypeCache<T>
+    {
+        internal static readonly bool IsCommand = typeof(T).GetInterfaces()
+            .Any(i => i == typeof(ICommand) ||
+                      (i.IsGenericType && i.GetGenericTypeDefinition() == typeof(ICommand<>)));
+
+        internal static readonly bool IsQuery = typeof(T).GetInterfaces()
+            .Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IQuery<>));
+    }
+
+    private static class ResultTypeCache<T>
+    {
+        internal static readonly bool IsResult = typeof(T).IsAssignableTo(typeof(Result));
     }
 }

@@ -5,14 +5,13 @@ using Polly;
 using Polly.CircuitBreaker;
 using Polly.Retry;
 using B2B.Shared.Core.Common;
-using B2B.Shared.Core.CQRS;
 
 namespace B2B.Shared.Infrastructure.Behaviors;
 
 /// <summary>
 /// MediatR pipeline behavior that applies a two-layer Polly 8 resilience pipeline
-/// plus a bulkhead guard to all <see cref="ICommand"/> / <see cref="ICommand{TResponse}"/>
-/// requests.
+/// plus a bulkhead guard to all <see cref="B2B.Shared.Core.CQRS.ICommand"/> /
+/// <see cref="B2B.Shared.Core.CQRS.ICommand{TResponse}"/> requests.
 ///
 /// Execution order (outermost → innermost):
 ///
@@ -32,10 +31,18 @@ namespace B2B.Shared.Infrastructure.Behaviors;
 public sealed class RetryBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
     where TRequest : notnull
 {
-    // Computed once per closed generic type — no per-request allocation.
-    private static readonly bool IsCommand = typeof(TRequest).GetInterfaces()
-        .Any(i => i == typeof(ICommand) ||
-                  (i.IsGenericType && i.GetGenericTypeDefinition() == typeof(ICommand<>)));
+    // Computed once per closed generic type via ResultHelper's JIT-static cache.
+    private static readonly bool IsCommand = ResultHelper.IsCommandRequest<TRequest>();
+    private static readonly bool IsResult  = ResultHelper.IsResultResponse<TResponse>();
+
+    // Shared predicate for both circuit breaker and retry — single definition, no duplication.
+    private static readonly PredicateBuilder<TResponse> TransientFaultPredicate =
+        new PredicateBuilder<TResponse>()
+            .Handle<IOException>()
+            .Handle<TimeoutException>()
+            .Handle<InvalidOperationException>(ex =>
+                ex.Message.Contains("connection", StringComparison.OrdinalIgnoreCase) ||
+                ex.Message.Contains("timeout",    StringComparison.OrdinalIgnoreCase));
 
     private readonly ResiliencePipeline<TResponse> _pipeline;
     private readonly ILogger<RetryBehavior<TRequest, TResponse>> _logger;
@@ -64,12 +71,7 @@ public sealed class RetryBehavior<TRequest, TResponse> : IPipelineBehavior<TRequ
                 MinimumThroughput = opts.CircuitBreakerMinimumThroughput,
                 SamplingDuration = TimeSpan.FromSeconds(opts.CircuitBreakerSamplingDurationSeconds),
                 BreakDuration = TimeSpan.FromSeconds(opts.CircuitBreakerBreakDurationSeconds),
-                ShouldHandle = new PredicateBuilder<TResponse>()
-                    .Handle<IOException>()
-                    .Handle<TimeoutException>()
-                    .Handle<InvalidOperationException>(ex =>
-                        ex.Message.Contains("connection", StringComparison.OrdinalIgnoreCase) ||
-                        ex.Message.Contains("timeout",    StringComparison.OrdinalIgnoreCase)),
+                ShouldHandle = TransientFaultPredicate,
                 OnOpened = args =>
                 {
                     logger.LogError(args.Outcome.Exception,
@@ -102,12 +104,7 @@ public sealed class RetryBehavior<TRequest, TResponse> : IPipelineBehavior<TRequ
                 BackoffType = DelayBackoffType.Exponential,
                 UseJitter = opts.UseJitter,
                 Delay = TimeSpan.FromMilliseconds(opts.InitialDelayMs),
-                ShouldHandle = new PredicateBuilder<TResponse>()
-                    .Handle<IOException>()
-                    .Handle<TimeoutException>()
-                    .Handle<InvalidOperationException>(ex =>
-                        ex.Message.Contains("connection", StringComparison.OrdinalIgnoreCase) ||
-                        ex.Message.Contains("timeout",    StringComparison.OrdinalIgnoreCase)),
+                ShouldHandle = TransientFaultPredicate,
                 OnRetry = args =>
                 {
                     logger.LogWarning(
@@ -135,7 +132,7 @@ public sealed class RetryBehavior<TRequest, TResponse> : IPipelineBehavior<TRequ
                 "Bulkhead saturated for {Request} — max concurrency {Max} reached",
                 typeof(TRequest).Name, _bulkheadMaxConcurrency);
 
-            if (typeof(TResponse).IsAssignableTo(typeof(Result)))
+            if (IsResult)
                 return (TResponse)ResultHelper.Failure(typeof(TResponse),
                     Error.ServiceUnavailable("Bulkhead.Full",
                         "Server is currently handling too many requests. Please retry shortly."));
@@ -152,7 +149,7 @@ public sealed class RetryBehavior<TRequest, TResponse> : IPipelineBehavior<TRequ
             _logger.LogError(ex, "Circuit open — {Request} rejected (service unavailable)",
                 typeof(TRequest).Name);
 
-            if (typeof(TResponse).IsAssignableTo(typeof(Result)))
+            if (IsResult)
                 return (TResponse)ResultHelper.Failure(typeof(TResponse),
                     Error.ServiceUnavailable("CircuitBreaker.Open",
                         $"Service temporarily unavailable. '{typeof(TRequest).Name}' rejected while circuit is open."));
