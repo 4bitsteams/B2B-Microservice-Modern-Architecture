@@ -7,6 +7,40 @@ using OrderEntity = B2B.Order.Domain.Entities.Order;
 
 namespace B2B.Order.Application.Commands.CreateOrder;
 
+/// <summary>
+/// Handles <see cref="CreateOrderCommand"/> by creating an <see cref="OrderEntity"/>
+/// aggregate, applying the tenant's tax rate, confirming it immediately, and persisting it.
+///
+/// <para>
+/// Pipeline (executed before this handler):
+/// <c>LoggingBehavior → ValidationBehavior (CreateOrderValidator) → IdempotencyBehavior → DomainEventBehavior → Handler</c>
+/// </para>
+///
+/// <para>
+/// Design decisions:
+/// <list type="bullet">
+///   <item>
+///     <description>
+///       Orders created via the public API are confirmed immediately.
+///       This differs from basket-checkout orders (created via <c>BasketCheckedOutConsumer</c>)
+///       but the end state is the same: a confirmed order that starts the fulfilment saga.
+///     </description>
+///   </item>
+///   <item>
+///     <description>
+///       Tax rate is resolved via the pluggable <see cref="ITaxService"/> — injecting a
+///       stub in tests produces deterministic totals without external dependencies.
+///     </description>
+///   </item>
+///   <item>
+///     <description>
+///       Order number generation is delegated to <see cref="IOrderNumberGenerator"/>,
+///       keeping the format configurable (sequential, tenant-prefixed, UUID-based, etc.).
+///     </description>
+///   </item>
+/// </list>
+/// </para>
+/// </summary>
 public sealed class CreateOrderHandler(
     IOrderRepository orderRepository,
     ICurrentUser currentUser,
@@ -15,6 +49,7 @@ public sealed class CreateOrderHandler(
     IOrderNumberGenerator orderNumberGenerator)
     : ICommandHandler<CreateOrderCommand, CreateOrderResponse>
 {
+    /// <inheritdoc/>
     public async Task<Result<CreateOrderResponse>> Handle(
         CreateOrderCommand request, CancellationToken cancellationToken)
     {
@@ -46,7 +81,7 @@ public sealed class CreateOrderHandler(
         var taxRate = await taxService.GetTaxRateAsync(currentUser.TenantId, ct: cancellationToken);
         order.ApplyTaxRate(taxRate);
 
-        // A freshly created order is always Pending; propagate defensively.
+        // A freshly created order is always Pending; confirm defensively.
         var confirmResult = order.Confirm();
         if (confirmResult.IsFailure)
             return confirmResult.Error;

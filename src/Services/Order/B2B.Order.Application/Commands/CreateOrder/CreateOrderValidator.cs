@@ -2,6 +2,19 @@ using FluentValidation;
 
 namespace B2B.Order.Application.Commands.CreateOrder;
 
+/// <summary>
+/// FluentValidation validator for <see cref="CreateOrderCommand"/>.
+/// Executed by <c>ValidationBehavior</c> in the MediatR pipeline before the handler runs.
+///
+/// <para>
+/// Rules:
+/// <list type="bullet">
+///   <item><description>ShippingAddress — required; street max 300 chars; city max 100 chars; country 2–3 chars (ISO 3166-1).</description></item>
+///   <item><description>Items — at least one item must be provided.</description></item>
+///   <item><description>Each item — ProductId not empty; Quantity &gt; 0; UnitPrice ≥ 0; ProductName not empty (max 300 chars).</description></item>
+/// </list>
+/// </para>
+/// </summary>
 public sealed class CreateOrderValidator : AbstractValidator<CreateOrderCommand>
 {
     public CreateOrderValidator()

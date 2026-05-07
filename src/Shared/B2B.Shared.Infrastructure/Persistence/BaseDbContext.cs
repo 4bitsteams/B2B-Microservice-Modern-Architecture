@@ -56,11 +56,20 @@ public abstract class BaseDbContext : DbContext, IUnitOfWork
         {
             return await base.SaveChangesAsync(cancellationToken);
         }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            // Translate to a domain exception so Application handlers can return
+            // Error.Conflict without referencing EF Core directly.
+            // Triggered when an optimistic-concurrency token (e.g. PostgreSQL xmin,
+            // or a RowVersion column) detects that another writer modified the row
+            // between our read and our write.
+            throw new ConcurrencyException(ex.Message, ex);
+        }
         catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex))
         {
             // Translate to a domain exception so Application handlers can return
             // Error.Conflict without referencing EF Core or Npgsql directly.
-            throw new UniqueConstraintException(ex.InnerException?.Message ?? ex.Message);
+            throw new UniqueConstraintException(ex.InnerException?.Message ?? ex.Message, ex);
         }
     }
 
