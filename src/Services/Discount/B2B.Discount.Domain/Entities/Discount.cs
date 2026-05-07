@@ -1,4 +1,5 @@
 using B2B.Discount.Domain.Events;
+using B2B.Shared.Core.Common;
 using B2B.Shared.Core.Domain;
 using B2B.Shared.Core.Interfaces;
 
@@ -143,12 +144,14 @@ public sealed class Discount : AggregateRoot<Guid>, IAuditableEntity
     /// Applies the discount to <paramref name="price"/> and increments the usage counter.
     /// </summary>
     /// <param name="price">The original price to discount.</param>
-    /// <returns>The discounted price, rounded to two decimal places. Never negative.</returns>
-    /// <exception cref="InvalidOperationException">Thrown when <see cref="IsAvailable"/> is <see langword="false"/>.</exception>
-    public decimal Apply(decimal price)
+    /// <returns>
+    /// The discounted price (rounded to two decimal places, never negative) on success;
+    /// <c>Error.Validation</c> when the discount is not currently available.
+    /// </returns>
+    public Result<decimal> Apply(decimal price)
     {
         if (!IsAvailable)
-            throw new InvalidOperationException("Discount is not available.");
+            return Error.Validation("Discount.NotAvailable", "Discount is not available.");
 
         UsageCount++;
 
@@ -156,7 +159,7 @@ public sealed class Discount : AggregateRoot<Guid>, IAuditableEntity
         {
             DiscountType.Percentage  => Math.Round(price * (1 - Value / 100), 2),
             DiscountType.FixedAmount => Math.Max(0, Math.Round(price - Value, 2)),
-            _ => throw new NotSupportedException($"Discount type '{Type}' is not supported.")
+            _ => Error.Validation("Discount.UnsupportedType", $"Discount type '{Type}' is not supported.")
         };
     }
 

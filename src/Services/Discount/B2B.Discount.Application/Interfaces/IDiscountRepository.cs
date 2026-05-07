@@ -1,5 +1,6 @@
 using B2B.Shared.Core.Common;
 using B2B.Shared.Core.Interfaces;
+using CouponEntity = B2B.Discount.Domain.Entities.Coupon;
 using DiscountEntity = B2B.Discount.Domain.Entities.Discount;
 
 namespace B2B.Discount.Application.Interfaces;
@@ -38,11 +39,11 @@ public interface IReadDiscountRepository : IReadRepository<DiscountEntity, Guid>
 }
 
 /// <summary>
-/// Write repository for <see cref="B2B.Discount.Domain.Entities.Coupon"/> aggregates.
+/// Write repository for <see cref="CouponEntity"/> aggregates.
 /// Targets the primary database with change tracking enabled.
 /// Inject into command handlers only — never into query handlers.
 /// </summary>
-public interface ICouponRepository : IRepository<B2B.Discount.Domain.Entities.Coupon, Guid>
+public interface ICouponRepository : IRepository<CouponEntity, Guid>
 {
     /// <summary>
     /// Looks up a coupon by its redemption code within the given tenant.
@@ -52,15 +53,15 @@ public interface ICouponRepository : IRepository<B2B.Discount.Domain.Entities.Co
     /// <param name="tenantId">The tenant scope — coupons are not shared across tenants.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The matching <c>Coupon</c>, or <see langword="null"/> if not found.</returns>
-    Task<B2B.Discount.Domain.Entities.Coupon?> GetByCodeAsync(string code, Guid tenantId, CancellationToken ct = default);
+    Task<CouponEntity?> GetByCodeAsync(string code, Guid tenantId, CancellationToken ct = default);
 }
 
 /// <summary>
-/// Read-only repository for <see cref="B2B.Discount.Domain.Entities.Coupon"/> aggregates.
+/// Read-only repository for <see cref="CouponEntity"/> aggregates.
 /// Targets the read replica with <c>QueryTrackingBehavior.NoTracking</c>.
 /// Inject into query handlers only — <c>SaveChangesAsync</c> is not exposed.
 /// </summary>
-public interface IReadCouponRepository : IReadRepository<B2B.Discount.Domain.Entities.Coupon, Guid>
+public interface IReadCouponRepository : IReadRepository<CouponEntity, Guid>
 {
     /// <summary>
     /// Returns a paged list of coupons for the given tenant, ordered by creation date descending.
@@ -69,5 +70,5 @@ public interface IReadCouponRepository : IReadRepository<B2B.Discount.Domain.Ent
     /// <param name="page">1-based page number.</param>
     /// <param name="pageSize">Maximum items per page.</param>
     /// <param name="ct">Cancellation token.</param>
-    Task<PagedList<B2B.Discount.Domain.Entities.Coupon>> GetPagedByTenantAsync(Guid tenantId, int page, int pageSize, CancellationToken ct = default);
+    Task<PagedList<CouponEntity>> GetPagedByTenantAsync(Guid tenantId, int page, int pageSize, CancellationToken ct = default);
 }

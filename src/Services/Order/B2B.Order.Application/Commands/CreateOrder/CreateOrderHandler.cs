@@ -53,20 +53,8 @@ public sealed class CreateOrderHandler(
     public async Task<Result<CreateOrderResponse>> Handle(
         CreateOrderCommand request, CancellationToken cancellationToken)
     {
-        var shippingAddress = Address.Create(
-            request.ShippingAddress.Street,
-            request.ShippingAddress.City,
-            request.ShippingAddress.State,
-            request.ShippingAddress.PostalCode,
-            request.ShippingAddress.Country);
-
-        Address? billingAddress = request.BillingAddress is null ? null
-            : Address.Create(
-                request.BillingAddress.Street,
-                request.BillingAddress.City,
-                request.BillingAddress.State,
-                request.BillingAddress.PostalCode,
-                request.BillingAddress.Country);
+        var shippingAddress = MapToAddress(request.ShippingAddress);
+        Address? billingAddress = request.BillingAddress is null ? null : MapToAddress(request.BillingAddress);
 
         var order = OrderEntity.Create(
             currentUser.UserId, currentUser.TenantId,
@@ -93,4 +81,7 @@ public sealed class CreateOrderHandler(
             order.Id, order.OrderNumber,
             order.TotalAmount, order.Status.ToString());
     }
+
+    private static Address MapToAddress(AddressDto dto) =>
+        Address.Create(dto.Street, dto.City, dto.State, dto.PostalCode, dto.Country);
 }
