@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using B2B.Shared.Core.Domain;
 using B2B.Shared.Core.Interfaces;
@@ -43,7 +44,7 @@ namespace B2B.Shared.Infrastructure.Persistence;
 /// Register as <c>Scoped</c> — lifetime must match the owning <typeparamref name="TContext"/>.
 /// </summary>
 public abstract class BaseRepository<TEntity, TId, TContext>(TContext context)
-    : ILockableRepository<TEntity, TId>
+    : ILockableRepository<TEntity, TId>, IStreamingRepository<TEntity, TId>
     where TEntity : AggregateRoot<TId>
     where TId : notnull
     where TContext : BaseDbContext
@@ -164,6 +165,34 @@ public abstract class BaseRepository<TEntity, TId, TContext>(TContext context)
         ct.ThrowIfCancellationRequested();
         await AcquireRowLockAsync(id, forUpdate: false, ct);
         return await DbSet.FindAsync([id], ct);
+    }
+
+    // ── IStreamingRepository<TEntity, TId> ───────────────────────────────────
+
+    /// <summary>
+    /// Streams entities matching <paramref name="predicate"/> one at a time using
+    /// EF Core's <c>AsAsyncEnumerable()</c> server-side cursor.
+    ///
+    /// Unlike <see cref="FindAsync(Expression{Func{TEntity,bool}},CancellationToken)"/>,
+    /// this method never buffers the full result set — memory consumption is bounded
+    /// to the Npgsql fetch window, not the total row count. Use for large collections
+    /// such as nightly batch jobs, report exports, or bulk reprocessing.
+    ///
+    /// Entities are loaded with change tracking so callers can mutate and persist
+    /// within the same unit of work scope.
+    /// </summary>
+    public virtual async IAsyncEnumerable<TEntity> StreamAsync(
+        Expression<Func<TEntity, bool>>? predicate = null,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        var query = predicate is null
+            ? DbSet.AsQueryable()
+            : DbSet.Where(predicate);
+
+        await foreach (var entity in query.AsAsyncEnumerable().WithCancellation(ct))
+            yield return entity;
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────

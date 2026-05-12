@@ -12,6 +12,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.ObjectPool;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using OpenTelemetry.Metrics;
@@ -22,6 +23,7 @@ using B2B.Shared.Core.Interfaces;
 using B2B.Shared.Infrastructure.BackgroundServices;
 using B2B.Shared.Infrastructure.Behaviors;
 using B2B.Shared.Infrastructure.Caching;
+using B2B.Shared.Infrastructure.Channels;
 using B2B.Shared.Infrastructure.Http;
 using B2B.Shared.Infrastructure.Locking;
 using B2B.Shared.Infrastructure.Messaging;
@@ -112,7 +114,8 @@ public static class ServiceCollectionExtensions
             .AddDefaultHealthChecks(config)
             .AddDistributedLock()
             .AddPlatformServices(config)
-            .AddNotifications();
+            .AddNotifications()
+            .AddObjectPools();
 
         return services;
     }
@@ -607,6 +610,81 @@ public static class ServiceCollectionExtensions
             config.GetSection(configSection));
 
         services.AddHostedService<OutboxRelayBackgroundService<TContext>>();
+        return services;
+    }
+
+    // ── Memory management / scalability ──────────────────────────────────────
+
+    /// <summary>
+    /// Registers platform-wide object pools for reusable, allocation-heavy types.
+    ///
+    /// Currently pooled:
+    /// • <c>ObjectPool&lt;StringBuilder&gt;</c> — reuses string-builder instances across
+    ///   request scopes to avoid per-request heap allocations for message formatting,
+    ///   report generation, or dynamic SQL construction.
+    ///
+    /// Inject <c>ObjectPool&lt;StringBuilder&gt;</c> directly in a service:
+    /// <code>
+    /// public class ReportService(ObjectPool&lt;StringBuilder&gt; pool)
+    /// {
+    ///     public string Build()
+    ///     {
+    ///         var sb = pool.Get();
+    ///         try   { sb.Append(...); return sb.ToString(); }
+    ///         finally { pool.Return(sb); }
+    ///     }
+    /// }
+    /// </code>
+    /// </summary>
+    public static IServiceCollection AddObjectPools(this IServiceCollection services)
+    {
+        // DefaultObjectPoolProvider uses ArrayPool<char> internally for StringBuilder,
+        // so each Get() returns a cleared, pre-allocated builder from the pool.
+        services.AddSingleton<ObjectPoolProvider, DefaultObjectPoolProvider>();
+        services.AddSingleton(sp =>
+            sp.GetRequiredService<ObjectPoolProvider>().CreateStringBuilderPool());
+        return services;
+    }
+
+    /// <summary>
+    /// Registers a bounded <see cref="IMessageChannel{TMessage}"/> (Singleton) and a
+    /// concrete <see cref="ChannelConsumerBackgroundService{TMessage}"/> (Hosted Service)
+    /// for high-throughput in-process message passing.
+    ///
+    /// Producers write into the channel with near-zero overhead on the HTTP request path;
+    /// the background consumer drains it with up to
+    /// <see cref="ChannelConsumerOptions.MaxConcurrency"/> parallel workers.
+    ///
+    /// Usage:
+    /// <code>
+    /// services.AddMessageChannel&lt;NotificationMessage, NotificationChannelConsumer&gt;(
+    ///     config, "Channels:Notification");
+    /// </code>
+    /// </summary>
+    /// <typeparam name="TMessage">The message type flowing through the channel.</typeparam>
+    /// <typeparam name="TConsumer">
+    /// The concrete <see cref="ChannelConsumerBackgroundService{TMessage}"/> subclass.
+    /// </typeparam>
+    /// <param name="configSection">
+    /// Configuration section path binding to <see cref="ChannelConsumerOptions"/>.
+    /// When <see langword="null"/>, defaults are used.
+    /// </param>
+    public static IServiceCollection AddMessageChannel<TMessage, TConsumer>(
+        this IServiceCollection services,
+        IConfiguration config,
+        string? configSection = null)
+        where TMessage : class
+        where TConsumer : ChannelConsumerBackgroundService<TMessage>
+    {
+        if (configSection is not null)
+            services.Configure<ChannelConsumerOptions>(config.GetSection(configSection));
+        else
+            services.Configure<ChannelConsumerOptions>(_ => { });
+
+        // Singleton: the channel must outlive DI scopes so producers and the consumer
+        // background service always share the same bounded channel instance.
+        services.AddSingleton<IMessageChannel<TMessage>, BoundedMessageChannel<TMessage>>();
+        services.AddHostedService<TConsumer>();
         return services;
     }
 }

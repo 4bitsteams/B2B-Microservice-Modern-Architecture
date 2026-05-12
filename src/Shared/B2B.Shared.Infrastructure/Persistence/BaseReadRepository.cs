@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using B2B.Shared.Core.Interfaces;
 
@@ -46,5 +47,32 @@ public abstract class BaseReadRepository<TEntity, TId, TContext>(IDbContextFacto
     {
         await using var ctx = await Factory.CreateDbContextAsync(ct);
         return await ctx.Set<TEntity>().AnyAsync(predicate, ct);
+    }
+
+    /// <summary>
+    /// Streams entities matching <paramref name="predicate"/> one at a time from the
+    /// read replica using a server-side cursor (EF Core <c>AsAsyncEnumerable</c>).
+    ///
+    /// The <see cref="IDbContextFactory{TContext}"/> creates a single context that
+    /// stays open for the duration of the enumeration, then disposes it when the
+    /// caller's <c>await foreach</c> loop exits (or the token is cancelled).
+    /// Change tracking is disabled at the factory level (NoTracking) so there is
+    /// no tracker overhead while streaming.
+    /// </summary>
+    public virtual async IAsyncEnumerable<TEntity> StreamAsync(
+        Expression<Func<TEntity, bool>>? predicate = null,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        // The context must stay alive for the full duration of the stream, so we
+        // use 'await using' inside an async iterator — the compiler guarantees the
+        // context is disposed only after the last 'yield return' (or on cancellation).
+        await using var ctx = await Factory.CreateDbContextAsync(ct);
+
+        var query = predicate is null
+            ? ctx.Set<TEntity>().AsNoTracking()
+            : ctx.Set<TEntity>().AsNoTracking().Where(predicate);
+
+        await foreach (var entity in query.AsAsyncEnumerable().WithCancellation(ct))
+            yield return entity;
     }
 }

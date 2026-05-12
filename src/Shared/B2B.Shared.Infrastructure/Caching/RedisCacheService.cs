@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text.Json;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
@@ -7,6 +8,35 @@ using B2B.Shared.Core.Interfaces;
 
 namespace B2B.Shared.Infrastructure.Caching;
 
+/// <summary>
+/// Redis-backed implementation of <see cref="ICacheService"/> with zero-allocation
+/// serialisation on the hot GET/SET path.
+///
+/// MEMORY OPTIMISATIONS
+/// ────────────────────
+/// <b>GET path (deserialise):</b>
+///   <c>IDistributedCache.GetAsync</c> returns <c>byte[]?</c> directly from the Redis wire.
+///   <c>JsonSerializer.Deserialize&lt;T&gt;(ReadOnlySpan&lt;byte&gt;)</c> parses directly from the byte
+///   span, skipping the UTF-8 → string allocation and the subsequent string → parser
+///   re-encoding that the old <c>GetStringAsync</c> path required.
+///   Allocation delta vs. the string path: −1 string per cache hit.
+///
+/// <b>SET path (serialise):</b>
+///   <c>ArrayBufferWriter&lt;byte&gt;</c> + <c>Utf8JsonWriter</c> serialise directly to a byte buffer,
+///   avoiding the intermediate <c>string</c> and the <c>Encoding.UTF8.GetBytes</c> call that
+///   <c>SetStringAsync</c> performed internally.
+///   Allocation delta vs. the string path: −1 string per cache write.
+///
+/// STAMPEDE PROTECTION
+/// ───────────────────
+/// Per-key <see cref="SemaphoreSlim"/> instances are held in a size-capped
+/// <see cref="IMemoryCache"/> (10 000 entries, 5-minute sliding eviction).
+/// <see cref="GetOrCreateAsync{T}"/> uses a double-check pattern:
+///   1. Fast path — attempt read without acquiring the semaphore.
+///   2. Slow path — acquire per-key semaphore, re-check, call factory, store.
+/// This prevents the thundering-herd problem within a single process replica.
+/// For full multi-replica stampede protection use a Redis-based distributed lock.
+/// </summary>
 public sealed class RedisCacheService(
     IDistributedCache cache,
     IConnectionMultiplexer multiplexer,
@@ -15,7 +45,7 @@ public sealed class RedisCacheService(
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy        = JsonNamingPolicy.CamelCase
     };
 
     // ── Stampede-guard constants ───────────────────────────────────────────────
@@ -46,11 +76,6 @@ public sealed class RedisCacheService(
     private const int RedisScanPageSize = 250;
 
     // Per-key semaphores prevent cache stampede (thundering herd) on cache miss.
-    // Multiple concurrent requests for the same key queue behind the first caller;
-    // subsequent requests hit the now-populated cache.
-    //
-    // NOTE: This guards within a single process. For full multi-replica stampede
-    // protection a Redis-based distributed lock (Redlock) would be needed.
     private readonly IMemoryCache _semaphoreCache = new MemoryCache(new MemoryCacheOptions
     {
         SizeLimit = SemaphoreCacheSizeLimit
@@ -66,12 +91,27 @@ public sealed class RedisCacheService(
 
     public void Dispose() => _semaphoreCache.Dispose();
 
+    // ── ICacheService ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns the cached value for <paramref name="key"/>, or <see langword="null"/>
+    /// on a cache miss.
+    ///
+    /// Zero-allocation hot path: deserialises directly from the <c>byte[]</c> returned
+    /// by Redis — no intermediate <c>string</c> allocation.
+    /// </summary>
     public async Task<T?> GetAsync<T>(string key, CancellationToken ct = default) where T : class
     {
         try
         {
-            var data = await cache.GetStringAsync(key, ct);
-            return data is null ? null : JsonSerializer.Deserialize<T>(data, JsonOptions);
+            // IDistributedCache.GetAsync returns byte[]? — the raw Redis wire bytes.
+            // Passing as ReadOnlySpan<byte> to the JSON deserialiser avoids:
+            //   • UTF-8 decode → string allocation (old GetStringAsync path)
+            //   • string → UTF-8 re-encode inside the JSON parser
+            var bytes = await cache.GetAsync(key, ct);
+            return bytes is null
+                ? null
+                : JsonSerializer.Deserialize<T>(bytes.AsSpan(), JsonOptions);
         }
         catch (Exception ex)
         {
@@ -80,7 +120,16 @@ public sealed class RedisCacheService(
         }
     }
 
-    public async Task SetAsync<T>(string key, T value, TimeSpan? expiry = null, CancellationToken ct = default) where T : class
+    /// <summary>
+    /// Stores <paramref name="value"/> under <paramref name="key"/>.
+    ///
+    /// Zero-allocation hot path: serialises via <see cref="ArrayBufferWriter{T}"/> +
+    /// <see cref="Utf8JsonWriter"/> directly to a byte buffer — no intermediate
+    /// <c>string</c> or <c>Encoding.UTF8.GetBytes</c> call.
+    /// </summary>
+    public async Task SetAsync<T>(
+        string key, T value, TimeSpan? expiry = null, CancellationToken ct = default)
+        where T : class
     {
         try
         {
@@ -88,8 +137,20 @@ public sealed class RedisCacheService(
             {
                 AbsoluteExpirationRelativeToNow = expiry ?? DefaultCacheExpiry
             };
-            var data = JsonSerializer.Serialize(value, JsonOptions);
-            await cache.SetStringAsync(key, data, options, ct);
+
+            // Serialise directly into a byte buffer — no string intermediate.
+            // ArrayBufferWriter<byte> starts with a small internal array and grows
+            // as needed (amortised doubling), so most small payloads fit in a single
+            // allocation that is then passed to SetAsync.
+            var buffer = new ArrayBufferWriter<byte>();
+            await using (var writer = new Utf8JsonWriter(buffer))
+            {
+                JsonSerializer.Serialize(writer, value, JsonOptions);
+            }
+
+            // WrittenSpan.ToArray() allocates exactly buffer.WrittenCount bytes —
+            // one allocation of the final size (vs. string + byte[] in the old path).
+            await cache.SetAsync(key, buffer.WrittenSpan.ToArray(), options, ct);
         }
         catch (Exception ex)
         {
@@ -105,6 +166,7 @@ public sealed class RedisCacheService(
 
     public async Task RemoveByPrefixAsync(string prefix, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         try
         {
             var db = multiplexer.GetDatabase();
