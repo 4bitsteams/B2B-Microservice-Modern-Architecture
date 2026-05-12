@@ -5,6 +5,10 @@ global:
     environment: development
     platform: b2b-microservices
 
+# Alert rules — business errors + unhandled exceptions (APM / Grafana alerting)
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+
 scrape_configs:
   # ── OTel Collector Prometheus endpoint ──────────────────────────────────────
   # All microservices push metrics via OTLP → Collector → Prometheus scrape.

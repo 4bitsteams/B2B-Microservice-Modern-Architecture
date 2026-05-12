@@ -12,18 +12,22 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using StackExchange.Redis;
 using B2B.Shared.Core.Interfaces;
+using B2B.Shared.Infrastructure.BackgroundServices;
 using B2B.Shared.Infrastructure.Behaviors;
 using B2B.Shared.Infrastructure.Caching;
 using B2B.Shared.Infrastructure.Http;
 using B2B.Shared.Infrastructure.Locking;
 using B2B.Shared.Infrastructure.Messaging;
+using B2B.Shared.Infrastructure.Middleware;
 using B2B.Shared.Infrastructure.Notifications;
+using B2B.Shared.Infrastructure.Observability;
 using B2B.Shared.Infrastructure.Services;
 using Microsoft.AspNetCore.Http;
 
@@ -144,7 +148,8 @@ public static class ServiceCollectionExtensions
 
             // Pipeline order (outermost → innermost → handler):
             //
-            //   LoggingBehavior        — structured request/response logs
+            //   LoggingBehavior        — structured request/response logs; marks OTel spans on failure
+            //   ErrorMetricsBehavior   — records business-error counters (APM/Grafana) after retries
             //   RetryBehavior          — transient fault retry (commands only)
             //   IdempotencyBehavior    — deduplication via idempotency key (commands only)
             //   PerformanceBehavior    — slow query/command detection
@@ -152,7 +157,11 @@ public static class ServiceCollectionExtensions
             //   ValidationBehavior     — FluentValidation (short-circuits on error)
             //   AuditBehavior          — compliance audit trail (commands only)
             //   DomainEventBehavior    — publishes domain events after SaveChangesAsync (innermost)
+            //
+            // ErrorMetricsBehavior sits OUTSIDE RetryBehavior so it counts one metric
+            // per user request, not per retry attempt.
             cfg.AddOpenBehavior(typeof(LoggingBehavior<,>));
+            cfg.AddOpenBehavior(typeof(ErrorMetricsBehavior<,>));
             cfg.AddOpenBehavior(typeof(RetryBehavior<,>));
             cfg.AddOpenBehavior(typeof(IdempotencyBehavior<,>));
             cfg.AddOpenBehavior(typeof(PerformanceBehavior<,>));
@@ -176,7 +185,8 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers pluggable platform services: tax calculation, tiered pricing, and audit trail.
+    /// Registers pluggable platform services: tax calculation, tiered pricing, audit trail,
+    /// and error metrics (APM/Grafana).
     /// Each can be replaced by a custom implementation without touching application code.
     /// </summary>
     public static IServiceCollection AddPlatformServices(
@@ -185,6 +195,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<ITaxService, PercentageTaxService>();
         services.AddSingleton<IPricingService, TieredPricingService>();
         services.AddSingleton<IAuditService, SerilogAuditService>();
+
+        // IErrorMetricsService — singleton because Meter instruments are thread-safe
+        // and should be shared across all DI scopes (one counter per process, not per request).
+        services.AddSingleton<IErrorMetricsService, ErrorMetricsService>();
+
         return services;
     }
 
@@ -328,8 +343,12 @@ public static class ServiceCollectionExtensions
     /// Registers OpenTelemetry traces <b>and</b> metrics exported via OTLP.
     ///
     /// Traces: ASP.NET Core + HttpClient + EF Core → Jaeger / OTLP collector.
-    /// Metrics: ASP.NET Core + HttpClient + .NET Runtime → OTLP collector
-    ///          (collector can scrape or forward to Prometheus/Grafana).
+    /// Metrics: ASP.NET Core + HttpClient + .NET Runtime + B2B.Platform → OTLP collector
+    ///          (collector scrapes and forwards to Prometheus → Grafana).
+    ///
+    /// The "B2B.Platform" meter (<see cref="ErrorMetricsService.MeterName"/>) captures
+    /// business error counters and unhandled exception counters emitted by
+    /// <c>ErrorMetricsBehavior</c> and <c>GlobalExceptionMiddleware</c>.
     /// </summary>
     public static IServiceCollection AddServiceOpenTelemetry(
         this IServiceCollection services, IConfiguration config, string serviceName)
@@ -347,6 +366,9 @@ public static class ServiceCollectionExtensions
                 .AddAspNetCoreInstrumentation()
                 .AddHttpClientInstrumentation()
                 .AddRuntimeInstrumentation()
+                // Register the custom B2B error/exception meter so the OTel SDK
+                // picks up all instruments created by ErrorMetricsService.
+                .AddMeter(ErrorMetricsService.MeterName)
                 .AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint)));
 
         return services;
@@ -379,6 +401,10 @@ public static class ServiceCollectionExtensions
         // CorrelationId first — stamps X-Correlation-ID before any other middleware
         // reads logs/traces, so the ID propagates through the entire request chain.
         app.UseCorrelationId();
+
+        // Global exception handler sits AFTER correlation ID so every error log and
+        // ProblemDetails response already carries the correlation ID.
+        app.UseGlobalExceptionHandler();
 
         // Response compression — must run before any middleware that writes the body.
         app.UseResponseCompression();
@@ -415,6 +441,20 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IApplicationBuilder UseCorrelationId(this IApplicationBuilder app) =>
         app.UseMiddleware<CorrelationIdMiddleware>();
+
+    /// <summary>
+    /// Adds <see cref="GlobalExceptionMiddleware"/> to the request pipeline.
+    ///
+    /// Must be registered AFTER <see cref="UseCorrelationId"/> so the correlation
+    /// ID is already stamped in <c>HttpContext.Items</c> when an exception is caught.
+    /// Any unhandled exception is:
+    ///   1. Logged as a structured error (Serilog → Seq).
+    ///   2. Recorded as an <c>unhandled_exceptions</c> metric (OTel → Prometheus → Grafana).
+    ///   3. Returned to the caller as a <see cref="Microsoft.AspNetCore.Mvc.ProblemDetails"/> JSON body
+    ///      containing only the correlation ID and trace ID — no stack trace.
+    /// </summary>
+    public static IApplicationBuilder UseGlobalExceptionHandler(this IApplicationBuilder app) =>
+        app.UseMiddleware<GlobalExceptionMiddleware>();
 
     public static IServiceCollection AddPostgres<TContext>(
         this IServiceCollection services, IConfiguration config)
@@ -499,6 +539,74 @@ public static class ServiceCollectionExtensions
         // Register the base DbContext type so DomainEventBehavior can be resolved.
         services.AddScoped<DbContext>(sp => sp.GetRequiredService<TContext>());
 
+        return services;
+    }
+
+    // ── Background Consumer Services ─────────────────────────────────────────
+
+    /// <summary>
+    /// Registers a <see cref="ConsumerBackgroundService{TMessage}"/> implementation
+    /// as an <see cref="Microsoft.Extensions.Hosting.IHostedService"/> together with
+    /// its <see cref="ConsumerBackgroundServiceOptions"/>.
+    ///
+    /// Usage:
+    /// <code>
+    /// // Register any concrete subclass of ConsumerBackgroundService&lt;T&gt;:
+    /// services.AddConsumerBackgroundService&lt;MyConsumer, MyMessage&gt;(
+    ///     config, "BackgroundServices:MyConsumer");
+    /// </code>
+    /// </summary>
+    /// <typeparam name="TService">
+    /// The concrete <see cref="ConsumerBackgroundService{TMessage}"/> subclass to register.
+    /// </typeparam>
+    /// <typeparam name="TMessage">
+    /// The message type consumed by <typeparamref name="TService"/>.
+    /// </typeparam>
+    /// <param name="configSection">
+    /// The configuration section path that binds to
+    /// <see cref="ConsumerBackgroundServiceOptions"/> (e.g. "BackgroundServices:OutboxRelay").
+    /// When <see langword="null"/>, defaults are used.
+    /// </param>
+    public static IServiceCollection AddConsumerBackgroundService<TService, TMessage>(
+        this IServiceCollection services,
+        IConfiguration config,
+        string? configSection = null)
+        where TService : ConsumerBackgroundService<TMessage>
+        where TMessage : class
+    {
+        if (configSection is not null)
+            services.Configure<ConsumerBackgroundServiceOptions>(
+                config.GetSection(configSection));
+        else
+            services.Configure<ConsumerBackgroundServiceOptions>(_ => { });
+
+        services.AddHostedService<TService>();
+        return services;
+    }
+
+    /// <summary>
+    /// Registers <see cref="OutboxRelayBackgroundService{TContext}"/> for the given
+    /// <typeparamref name="TContext"/>.
+    ///
+    /// Requires <typeparamref name="TContext"/> to expose a <c>DbSet&lt;OutboxMessage&gt;</c>
+    /// and to be registered in DI (via <see cref="AddPostgres{TContext}"/> or
+    /// <see cref="AddPostgresWithReadReplica{TContext}"/>).
+    ///
+    /// Usage:
+    /// <code>
+    /// services.AddOutboxRelay&lt;OrderDbContext&gt;(config);
+    /// </code>
+    /// </summary>
+    public static IServiceCollection AddOutboxRelay<TContext>(
+        this IServiceCollection services,
+        IConfiguration config,
+        string configSection = "BackgroundServices:OutboxRelay")
+        where TContext : DbContext
+    {
+        services.Configure<ConsumerBackgroundServiceOptions>(
+            config.GetSection(configSection));
+
+        services.AddHostedService<OutboxRelayBackgroundService<TContext>>();
         return services;
     }
 }

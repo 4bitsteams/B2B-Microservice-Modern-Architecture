@@ -1,0 +1,158 @@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject IAuthService AuthService
+@inject NavigationManager Nav
+
+<div class="layout-wrapper">
+    <!-- Sidebar -->
+    <nav class="sidebar">
+        <a class="sidebar-brand" href="/">
+            <div class="brand-icon"><i class="bi bi-building"></i></div>
+            <div class="brand-text">
+                B2B Platform
+                <small>Enterprise Suite</small>
+            </div>
+        </a>
+
+        <div class="sidebar-section">
+            <div class="sidebar-section-label">Main</div>
+            <NavLink class="nav-item-b2b" href="/" Match="NavLinkMatch.All">
+                <i class="bi bi-speedometer2 nav-icon"></i> Dashboard
+            </NavLink>
+            <NavLink class="nav-item-b2b" href="/products">
+                <i class="bi bi-box-seam nav-icon"></i> Products
+            </NavLink>
+            <NavLink class="nav-item-b2b" href="/orders">
+                <i class="bi bi-bag-check nav-icon"></i> My Orders
+            </NavLink>
+            <NavLink class="nav-item-b2b" href="/basket">
+                <i class="bi bi-cart3 nav-icon"></i> Basket
+                @if (_basketCount > 0)
+                {
+                    <span class="badge bg-primary rounded-pill ms-auto">@_basketCount</span>
+                }
+            </NavLink>
+        </div>
+
+        <AuthorizeView Roles="TenantAdmin,SuperAdmin">
+            <Authorized>
+                <div class="sidebar-section">
+                    <div class="sidebar-section-label">Admin</div>
+                    <NavLink class="nav-item-b2b" href="/discounts">
+                        <i class="bi bi-tag nav-icon"></i> Discounts
+                    </NavLink>
+                    <NavLink class="nav-item-b2b" href="/coupons">
+                        <i class="bi bi-ticket-perforated nav-icon"></i> Coupons
+                    </NavLink>
+                </div>
+            </Authorized>
+        </AuthorizeView>
+
+        <div class="sidebar-footer">
+            <AuthorizeView>
+                <Authorized>
+                    <div class="d-flex align-items-center gap-2 mb-2 px-1">
+                        <div class="user-avatar">
+                            @GetInitials(context.User.Identity?.Name)
+                        </div>
+                        <div class="overflow-hidden">
+                            <div class="text-white small fw-semibold text-truncate">
+                                @(context.User.Identity?.Name ?? "User")
+                            </div>
+                            <div class="small" style="color:#718096;font-size:0.7rem;">
+                                @GetRole(context)
+                            </div>
+                        </div>
+                    </div>
+                    <button class="nav-item-b2b text-danger" @onclick="LogoutAsync">
+                        <i class="bi bi-box-arrow-left nav-icon"></i> Sign Out
+                    </button>
+                </Authorized>
+            </AuthorizeView>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="main-wrapper">
+        <header class="topbar">
+            <span class="topbar-title">@_pageTitle</span>
+            <div class="topbar-actions">
+                <a href="/basket" class="btn btn-sm btn-outline-secondary position-relative">
+                    <i class="bi bi-cart3"></i>
+                    @if (_basketCount > 0)
+                    {
+                        <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-primary">
+                            @_basketCount
+                        </span>
+                    }
+                </a>
+            </div>
+        </header>
+
+        <main class="page-content">
+            @Body
+        </main>
+    </div>
+</div>
+
+@code {
+    private int _basketCount;
+    private string _pageTitle = "B2B Platform";
+
+    [Inject] private IBasketService BasketService { get; set; } = default!;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { _basketCount = await BasketService.GetItemCountAsync(); }
+        catch { /* not critical */ }
+
+        Nav.LocationChanged += OnLocationChanged;
+        UpdatePageTitle(Nav.Uri);
+    }
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        UpdatePageTitle(e.Location);
+        StateHasChanged();
+    }
+
+    private void UpdatePageTitle(string url)
+    {
+        _pageTitle = url switch
+        {
+            var u when u.Contains("/products") => "Products",
+            var u when u.Contains("/orders/create") => "Create Order",
+            var u when u.Contains("/orders/") => "Order Detail",
+            var u when u.Contains("/orders") => "Orders",
+            var u when u.Contains("/basket") => "Basket",
+            var u when u.Contains("/discounts") => "Discounts",
+            var u when u.Contains("/coupons") => "Coupons",
+            _ => "Dashboard"
+        };
+    }
+
+    private async Task LogoutAsync()
+    {
+        await AuthService.LogoutAsync();
+        Nav.NavigateTo("/login", forceLoad: true);
+    }
+
+    private static string GetInitials(string? name)
+    {
+        if (string.IsNullOrEmpty(name)) return "U";
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length >= 2
+            ? $"{parts[0][0]}{parts[1][0]}".ToUpper()
+            : name[0].ToString().ToUpper();
+    }
+
+    private static string GetRole(AuthenticationState context)
+    {
+        var role = context.User.Claims
+            .FirstOrDefault(c => c.Type is "role" or "http://schemas.microsoft.com/ws/2008/06/identity/claims/role")
+            ?.Value;
+        return role ?? "Member";
+    }
+
+    public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
+}

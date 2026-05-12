@@ -1,0 +1,165 @@
+@page "/orders/{Id:guid}"
+@attribute [Authorize]
+@inject IOrderService OrderService
+@inject NavigationManager Nav
+
+<PageTitle>Order Detail — B2B Platform</PageTitle>
+
+@if (_loading)
+{
+    <LoadingSpinner Message="Loading order…" />
+}
+else if (_order is null)
+{
+    <div class="empty-state">
+        <div class="empty-icon"><i class="bi bi-bag-x"></i></div>
+        <h5>Order not found</h5>
+        <a href="/orders" class="btn btn-primary">Back to Orders</a>
+    </div>
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <nav aria-label="breadcrumb">
+                <ol class="breadcrumb mb-1">
+                    <li class="breadcrumb-item"><a href="/orders">Orders</a></li>
+                    <li class="breadcrumb-item active">@_order.OrderNumber</li>
+                </ol>
+            </nav>
+            <h1>@_order.OrderNumber</h1>
+        </div>
+        <div class="d-flex gap-2">
+            @if (_order.Status == "Pending")
+            {
+                <button class="btn btn-danger btn-sm" @onclick="ShowCancelDialog">
+                    <i class="bi bi-x-circle me-1"></i> Cancel
+                </button>
+            }
+        </div>
+    </div>
+
+    <ErrorAlert Message="@_error" />
+    <SuccessAlert Message="@_success" />
+
+    <div class="row g-3">
+        <!-- Order Items -->
+        <div class="col-lg-8">
+            <div class="b2b-card p-0 overflow-hidden">
+                <div class="p-3 border-bottom d-flex justify-content-between align-items-center">
+                    <h6 class="fw-semibold mb-0">Order Items</h6>
+                    <StatusBadge Status="@_order.Status" />
+                </div>
+                <div class="table-responsive">
+                    <table class="table mb-0 small">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Product</th>
+                                <th>SKU</th>
+                                <th class="text-center">Qty</th>
+                                <th class="text-end">Unit Price</th>
+                                <th class="text-end">Subtotal</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var item in _order.Items)
+                            {
+                                <tr>
+                                    <td class="fw-semibold">@item.ProductName</td>
+                                    <td class="text-muted">@item.Sku</td>
+                                    <td class="text-center">@item.Quantity</td>
+                                    <td class="text-end">@item.UnitPrice.ToString("C")</td>
+                                    <td class="text-end fw-semibold">@item.SubTotal.ToString("C")</td>
+                                </tr>
+                            }
+                        </tbody>
+                        <tfoot class="table-light">
+                            <tr>
+                                <td colspan="4" class="text-end fw-semibold">Subtotal</td>
+                                <td class="text-end">@_order.SubTotal.ToString("C")</td>
+                            </tr>
+                            <tr>
+                                <td colspan="4" class="text-end fw-semibold">Tax</td>
+                                <td class="text-end">@_order.TaxAmount.ToString("C")</td>
+                            </tr>
+                            <tr>
+                                <td colspan="4" class="text-end fw-bold fs-6">Total</td>
+                                <td class="text-end fw-bold fs-6 text-primary-b2b">@_order.TotalAmount.ToString("C")</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Order Info -->
+        <div class="col-lg-4">
+            <div class="b2b-card p-3 mb-3">
+                <h6 class="fw-semibold mb-3">Order Info</h6>
+                <dl class="row small mb-0">
+                    <dt class="col-5 text-muted">Order #</dt>
+                    <dd class="col-7 fw-semibold">@_order.OrderNumber</dd>
+                    <dt class="col-5 text-muted">Status</dt>
+                    <dd class="col-7"><StatusBadge Status="@_order.Status" /></dd>
+                    <dt class="col-5 text-muted">Date</dt>
+                    <dd class="col-7">@_order.CreatedAt.ToString("MMM d, yyyy HH:mm")</dd>
+                    @if (!string.IsNullOrEmpty(_order.Notes))
+                    {
+                        <dt class="col-5 text-muted">Notes</dt>
+                        <dd class="col-7">@_order.Notes</dd>
+                    }
+                </dl>
+            </div>
+
+            <div class="b2b-card p-3">
+                <h6 class="fw-semibold mb-3">Shipping Address</h6>
+                <address class="small text-muted mb-0">
+                    @_order.ShippingAddress.Street<br />
+                    @_order.ShippingAddress.City, @_order.ShippingAddress.State @_order.ShippingAddress.PostalCode<br />
+                    @_order.ShippingAddress.Country
+                </address>
+            </div>
+        </div>
+    </div>
+
+    <!-- Cancel Dialog -->
+    <ConfirmDialog IsVisible="@_showCancel"
+                   Title="Cancel Order"
+                   Message="@($"Are you sure you want to cancel order {_order.OrderNumber}? This action cannot be undone.")"
+                   ConfirmText="Yes, Cancel Order"
+                   OnConfirm="CancelOrderAsync"
+                   OnCancel="() => _showCancel = false" />
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private Models.Orders.OrderDto? _order;
+    private bool _loading = true;
+    private bool _showCancel;
+    private string? _error;
+    private string? _success;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _order = await OrderService.GetOrderAsync(Id);
+        _loading = false;
+    }
+
+    private void ShowCancelDialog() => _showCancel = true;
+
+    private async Task CancelOrderAsync()
+    {
+        _showCancel = false;
+        var ok = await OrderService.CancelOrderAsync(Id, "Cancelled by customer.");
+        if (ok)
+        {
+            _success = "Order cancelled successfully.";
+            _order = await OrderService.GetOrderAsync(Id);
+        }
+        else
+        {
+            _error = "Failed to cancel order.";
+        }
+    }
+}

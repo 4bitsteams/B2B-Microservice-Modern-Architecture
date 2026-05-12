@@ -1,0 +1,111 @@
+@page "/register"
+@layout B2B.Web.Layouts.AuthLayout
+@inject IAuthService AuthService
+@inject NavigationManager Nav
+
+<PageTitle>Create Account — B2B Platform</PageTitle>
+
+<div class="auth-card" style="max-width:480px;">
+    <div class="auth-logo">
+        <div class="logo-icon"><i class="bi bi-building"></i></div>
+        <div class="logo-text">B2B Platform</div>
+    </div>
+
+    <h2 class="fw-bold mb-1" style="font-size:1.4rem;">Create your account</h2>
+    <p class="text-muted mb-4" style="font-size:0.875rem;">Get started with B2B Platform today</p>
+
+    <ErrorAlert Message="@_error" />
+    <SuccessAlert Message="@_success" />
+
+    @if (!_registered)
+    {
+        <EditForm Model="_model" OnValidSubmit="HandleRegister">
+            <DataAnnotationsValidator />
+
+            <div class="row g-3 mb-3">
+                <div class="col-6">
+                    <label class="form-label fw-semibold small">First Name</label>
+                    <InputText @bind-Value="_model.FirstName" class="form-control" placeholder="John" />
+                </div>
+                <div class="col-6">
+                    <label class="form-label fw-semibold small">Last Name</label>
+                    <InputText @bind-Value="_model.LastName" class="form-control" placeholder="Doe" />
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label fw-semibold small">Company / Tenant Name</label>
+                <InputText @bind-Value="_model.TenantName" class="form-control" placeholder="Acme Corp" />
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label fw-semibold small">Work Email</label>
+                <InputText @bind-Value="_model.Email" type="email" class="form-control" placeholder="you@company.com" />
+            </div>
+
+            <div class="mb-4">
+                <label class="form-label fw-semibold small">Password</label>
+                <InputText @bind-Value="_model.Password" type="password" class="form-control" placeholder="Min. 8 characters" />
+            </div>
+
+            <button type="submit" class="btn btn-primary w-100 py-2 fw-semibold" disabled="@_loading">
+                @if (_loading)
+                {
+                    <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                    <span>Creating account…</span>
+                }
+                else
+                {
+                    <span>Create Account</span>
+                }
+            </button>
+        </EditForm>
+    }
+
+    <hr class="my-3" />
+    <p class="text-center text-muted small mb-0">
+        Already have an account?
+        <a href="/login" class="fw-semibold text-decoration-none">Sign in</a>
+    </p>
+</div>
+
+@code {
+    private RegisterFormModel _model = new();
+    private bool _loading;
+    private bool _registered;
+    private string? _error;
+    private string? _success;
+
+    private async Task HandleRegister()
+    {
+        _loading = true;
+        _error = null;
+
+        var result = await AuthService.RegisterAsync(new RegisterRequest(
+            _model.Email, _model.Password,
+            _model.FirstName, _model.LastName, _model.TenantName));
+
+        if (result.Succeeded)
+        {
+            _registered = true;
+            _success = "Account created successfully! Please sign in.";
+            await Task.Delay(2000);
+            Nav.NavigateTo("/login");
+        }
+        else
+        {
+            _error = result.Error;
+        }
+
+        _loading = false;
+    }
+
+    private sealed class RegisterFormModel
+    {
+        public string FirstName { get; set; } = string.Empty;
+        public string LastName { get; set; } = string.Empty;
+        public string TenantName { get; set; } = string.Empty;
+        public string Email { get; set; } = string.Empty;
+        public string Password { get; set; } = string.Empty;
+    }
+}

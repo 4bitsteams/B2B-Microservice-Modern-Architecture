@@ -1,0 +1,156 @@
+---
+# Prometheus Alerting Rules — B2B Platform Error Log Handling / APM
+#
+# These rules fire alerts when error metrics emitted by:
+#   • ErrorMetricsBehavior  → b2b_business_errors_total
+#   • GlobalExceptionMiddleware → b2b_unhandled_exceptions_total
+#
+# All thresholds are conservative defaults tuned for a development/staging
+# environment. Raise or lower them per-environment via Alertmanager overrides.
+#
+# HOW IT FLOWS
+# ────────────
+# .NET Meter (ErrorMetricsService)
+#   → OTLP → OTel Collector
+#   → Prometheus scrape (:8889)
+#   → Alertmanager (if configured)
+#   → PagerDuty / Slack / email (wire up in alertmanager.yml)
+
+groups:
+
+  # ── Business Error Alerts ───────────────────────────────────────────────────
+  - name: b2b_business_errors
+    interval: 30s
+    rules:
+
+      # Fire when any single error type sustains > 5 errors/min for 2 minutes.
+      # Catches runaway validation failures, broken integrations, or data issues.
+      - alert: HighBusinessErrorRate
+        expr: |
+          sum by (error_type, request_name) (
+            rate(b2b_business_errors_total[5m])
+          ) * 60 > 5
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High business error rate: {{ $labels.error_type }} on {{ $labels.request_name }}"
+          description: >
+            {{ $labels.error_type }} errors on {{ $labels.request_name }} are firing at
+            {{ printf "%.1f" $value }} errors/min (threshold: 5/min).
+            Check Seq for structured logs: filter by ErrorType="{{ $labels.error_type }}"
+            and RequestName="{{ $labels.request_name }}".
+          runbook_url: "http://localhost:5341/#/events?filter=ErrorType%3D%22{{ $labels.error_type }}%22"
+
+      # Fire when NotFound errors spike — often signals a broken client or
+      # a missing data migration in a recently deployed service.
+      - alert: ElevatedNotFoundErrors
+        expr: |
+          sum(rate(b2b_business_errors_total{error_type="NotFound"}[10m])) * 60 > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Elevated NotFound error rate across all services"
+          description: >
+            NotFound errors are firing at {{ printf "%.1f" $value }} errors/min
+            (threshold: 10/min over 10 min). A recent deployment may have broken
+            a resource reference or a migration is missing.
+
+      # Fire when Unauthorized errors spike — may indicate token expiry config
+      # issues, a key rotation, or a credential-stuffing attack pattern.
+      - alert: ElevatedUnauthorizedErrors
+        expr: |
+          sum(rate(b2b_business_errors_total{error_type="Unauthorized"}[5m])) * 60 > 20
+        for: 2m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "Elevated Unauthorized error rate — possible auth issue or attack"
+          description: >
+            Unauthorized errors are firing at {{ printf "%.1f" $value }} errors/min
+            (threshold: 20/min). Check JWT signing key configuration and Seq for
+            correlated authentication logs.
+
+      # Fire when circuit breaker / bulkhead saturation produces ServiceUnavailable results.
+      - alert: ServiceUnavailableErrors
+        expr: |
+          sum(rate(b2b_business_errors_total{error_type="ServiceUnavailable"}[2m])) * 60 > 1
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Circuit breaker open or bulkhead saturated — ServiceUnavailable errors"
+          description: >
+            ServiceUnavailable results are firing at {{ printf "%.1f" $value }} errors/min.
+            A circuit breaker has opened or the bulkhead is saturated. Check Seq for
+            RetryBehavior logs and Jaeger for failing downstream spans.
+
+  # ── Unhandled Exception Alerts ──────────────────────────────────────────────
+  - name: b2b_unhandled_exceptions
+    interval: 15s
+    rules:
+
+      # ANY unhandled exception rate > 0 should page — these are bugs, not expected failures.
+      - alert: UnhandledExceptions
+        expr: |
+          sum by (exception_type, request_path) (
+            rate(b2b_unhandled_exceptions_total[5m])
+          ) * 60 > 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Unhandled {{ $labels.exception_type }} on {{ $labels.request_path }}"
+          description: >
+            Unhandled {{ $labels.exception_type }} exceptions are occurring on
+            {{ $labels.request_path }} at {{ printf "%.2f" $value }} exceptions/min.
+            These are NOT mapped to Result failures — they are unexpected bugs.
+            Check Seq (Level=Error) and Jaeger (status=error) immediately.
+          runbook_url: "http://localhost:5341/#/events?filter=Level%3D%22Error%22"
+
+      # Sustained unhandled exception rate — indicates a systemic problem.
+      - alert: SustainedUnhandledExceptions
+        expr: |
+          sum(rate(b2b_unhandled_exceptions_total[10m])) * 60 > 2
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Sustained unhandled exception rate — systemic problem detected"
+          description: >
+            Unhandled exceptions have been firing at > 2/min for 5 minutes.
+            This indicates a systemic issue (bad deployment, infrastructure fault,
+            or data corruption). Consider rolling back the last deployment.
+
+  # ── Error Ratio Alerts ───────────────────────────────────────────────────────
+  - name: b2b_error_ratios
+    interval: 60s
+    rules:
+
+      # Total business errors as a ratio of all HTTP requests.
+      # Fires when > 5% of all requests result in a business failure.
+      - alert: HighOverallErrorRatio
+        expr: |
+          (
+            sum(rate(b2b_business_errors_total[5m]))
+            /
+            sum(rate(http_server_request_duration_seconds_count[5m]))
+          ) > 0.05
+        for: 3m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Overall business error ratio > 5%"
+          description: >
+            {{ printf "%.1f" (mul $value 100) }}% of HTTP requests are returning
+            business failures (threshold: 5%). Drill into the
+            b2b_business_errors_total metric by error_type and request_name
+            in Grafana to identify the root cause.

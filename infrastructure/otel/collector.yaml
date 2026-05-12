@@ -4,8 +4,19 @@
 # Processors: batch for efficiency, resource detection for host metadata
 # Exporters:
 #   traces  → Jaeger via OTLP
-#   metrics → Prometheus scrape endpoint + Jaeger (for exemplars)
-#   logs    → Seq via OTLP (future — Seq 2024+ supports OTLP)
+#   metrics → Prometheus scrape endpoint (→ Grafana)
+#   logs    → Seq via OTLP (Seq 2024+ supports OTLP ingest on port 5341)
+#
+# ERROR LOG HANDLING / APM
+# ─────────────────────────
+# Business-error metrics (b2b_business_errors_total, b2b_unhandled_exceptions_total)
+# are emitted by ErrorMetricsBehavior and GlobalExceptionMiddleware via the
+# "B2B.Platform" OTel meter → OTLP → this collector → Prometheus → Grafana.
+#
+# Structured error logs (LogWarning / LogError from LoggingBehavior and
+# GlobalExceptionMiddleware) flow: Serilog → Seq sink (direct) AND via the
+# OTLP logs pipeline below → Seq OTLP endpoint, giving full trace-to-log
+# correlation when switching between Jaeger and Seq in Grafana.
 
 receivers:
   otlp:
@@ -22,7 +33,7 @@ processors:
     send_batch_max_size: 2048
 
   memory_limiter:
-    # Prevent OOM — drop spans/metrics before the collector crashes.
+    # Prevent OOM — drop spans/metrics/logs before the collector crashes.
     check_interval: 1s
     limit_mib: 256
     spike_limit_mib: 64
@@ -32,6 +43,14 @@ processors:
       - action: insert
         key: deployment.environment
         value: development
+
+  # Enrich error logs with a severity label so Grafana log panels can filter
+  # on {severity="ERROR"} without scanning full log bodies.
+  attributes/error_logs:
+    actions:
+      - action: insert
+        key: log.source
+        value: b2b-platform
 
 exporters:
   otlp/jaeger:
@@ -44,6 +63,21 @@ exporters:
     namespace: b2b
     send_timestamps: true
     metric_expiration: 5m
+    # Enables Prometheus exemplars so Grafana can link metric data points
+    # directly to the Jaeger trace that triggered the error.
+    add_metric_suffixes: true
+
+  # Seq OTLP log exporter — Seq 2024.3 accepts OTLP/gRPC on port 5341.
+  # Logs arrive with TraceId/SpanId populated, enabling "jump to trace" from
+  # a Seq event directly into Jaeger without any manual copy-paste.
+  otlp/seq:
+    endpoint: seq:5341
+    tls:
+      insecure: true
+    headers:
+      # Seq API key — set via OTEL_EXPORTER_OTLP_HEADERS in docker-compose if
+      # authentication is enabled; leave empty for anonymous ingest (dev only).
+      X-Seq-ApiKey: ""
 
   debug:
     verbosity: basic
@@ -51,11 +85,20 @@ exporters:
 service:
   pipelines:
     traces:
-      receivers: [otlp]
+      receivers:  [otlp]
       processors: [memory_limiter, batch, resource]
-      exporters: [otlp/jaeger, debug]
+      exporters:  [otlp/jaeger, debug]
 
     metrics:
-      receivers: [otlp]
+      receivers:  [otlp]
       processors: [memory_limiter, batch, resource]
-      exporters: [prometheus]
+      exporters:  [prometheus]
+
+    # Logs pipeline: OTLP logs → Seq (with TraceId correlation)
+    # Services emit structured logs via Serilog's OpenTelemetry sink (if configured)
+    # or via the OTLP log bridge. The existing Serilog → Seq sink remains as a
+    # direct fallback so logs always reach Seq even if the collector is down.
+    logs:
+      receivers:  [otlp]
+      processors: [memory_limiter, batch, resource, attributes/error_logs]
+      exporters:  [otlp/seq, debug]

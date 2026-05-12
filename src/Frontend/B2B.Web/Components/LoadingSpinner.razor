@@ -1,0 +1,13 @@
+<div class="loading-overlay">
+    <div class="spinner-border text-primary" role="status" style="width:2.5rem;height:2.5rem;">
+        <span class="visually-hidden">Loading…</span>
+    </div>
+    @if (!string.IsNullOrEmpty(Message))
+    {
+        <p class="text-muted mb-0">@Message</p>
+    }
+</div>
+
+@code {
+    [Parameter] public string? Message { get; set; }
+}

@@ -1,0 +1,119 @@
+@page "/orders"
+@attribute [Authorize]
+@inject IOrderService OrderService
+@inject NavigationManager Nav
+
+<PageTitle>Orders — B2B Platform</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Orders</h1>
+        <p>Track and manage all your orders.</p>
+    </div>
+    <a href="/orders/create" class="btn btn-primary d-flex align-items-center gap-2">
+        <i class="bi bi-plus-lg"></i> New Order
+    </a>
+</div>
+
+<!-- Status filter tabs -->
+<div class="d-flex gap-2 mb-3 flex-wrap">
+    @foreach (var s in _statusFilters)
+    {
+        <button class="btn btn-sm @(_statusFilter == s ? "btn-primary" : "btn-outline-secondary")"
+                @onclick="() => SetStatus(s)">
+            @(s == "" ? "All" : s)
+        </button>
+    }
+</div>
+
+@if (_loading)
+{
+    <LoadingSpinner Message="Loading orders…" />
+}
+else if (_orders?.Items.Count == 0)
+{
+    <div class="b2b-card">
+        <div class="empty-state">
+            <div class="empty-icon"><i class="bi bi-bag-x"></i></div>
+            <h5>No orders yet</h5>
+            <p>Place your first order to get started.</p>
+            <a href="/orders/create" class="btn btn-primary">Create Order</a>
+        </div>
+    </div>
+}
+else
+{
+    <div class="table-b2b">
+        <table class="table mb-0">
+            <thead>
+                <tr>
+                    <th>Order #</th>
+                    <th>Status</th>
+                    <th>Items</th>
+                    <th>Total</th>
+                    <th>Date</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var order in _orders!.Items)
+                {
+                    <tr>
+                        <td>
+                            <a href="/orders/@order.Id" class="fw-semibold text-primary-b2b text-decoration-none">
+                                @order.OrderNumber
+                            </a>
+                        </td>
+                        <td><StatusBadge Status="@order.Status" /></td>
+                        <td class="text-muted">@order.ItemCount item@(order.ItemCount == 1 ? "" : "s")</td>
+                        <td class="fw-semibold">@order.TotalAmount.ToString("C")</td>
+                        <td class="text-muted">@order.CreatedAt.ToString("MMM d, yyyy")</td>
+                        <td class="text-end">
+                            <a href="/orders/@order.Id" class="btn btn-sm btn-outline-secondary">
+                                <i class="bi bi-eye"></i>
+                            </a>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <Pagination CurrentPage="_page"
+                TotalPages="_orders.TotalPages"
+                TotalCount="_orders.TotalCount"
+                OnPageChanged="OnPageChanged" />
+}
+
+@code {
+    private Models.Common.PagedResult<Models.Orders.OrderSummaryDto>? _orders;
+    private bool _loading = true;
+    private int _page = 1;
+    private string _statusFilter = "";
+
+    private static readonly string[] _statusFilters =
+        ["", "Pending", "Confirmed", "Processing", "Shipped", "Delivered", "Cancelled"];
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _orders = await OrderService.GetOrdersAsync(_page, 20,
+            string.IsNullOrEmpty(_statusFilter) ? null : _statusFilter);
+        _loading = false;
+    }
+
+    private async Task SetStatus(string status)
+    {
+        _statusFilter = status;
+        _page = 1;
+        await LoadAsync();
+    }
+
+    private async Task OnPageChanged(int page)
+    {
+        _page = page;
+        await LoadAsync();
+    }
+}

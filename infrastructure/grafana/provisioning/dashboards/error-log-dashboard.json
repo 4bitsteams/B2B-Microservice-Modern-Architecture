@@ -1,0 +1,329 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.4.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }
+  ],
+  "annotations": { "list": [] },
+  "description": "B2B Platform — Error Log Handling, APM, and Business Error Monitoring",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+
+    // ── Row: Overview ────────────────────────────────────────────────────────
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "Error Overview",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Total business errors per minute across all services and error types.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          },
+          "unit": "short",
+          "mappings": []
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "id": 1,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(b2b_business_errors_total[$__range]))",
+          "legendFormat": "Total Business Errors",
+          "refId": "A"
+        }
+      ],
+      "title": "Business Errors (selected range)",
+      "type": "stat"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Total unhandled exceptions — unexpected bugs that escaped the MediatR pipeline.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "id": 2,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(b2b_unhandled_exceptions_total[$__range]))",
+          "legendFormat": "Unhandled Exceptions",
+          "refId": "A"
+        }
+      ],
+      "title": "Unhandled Exceptions (selected range)",
+      "type": "stat"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Business error rate as a percentage of total HTTP requests.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          },
+          "unit": "percent",
+          "max": 100,
+          "min": 0
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "id": 3,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "100 * sum(rate(b2b_business_errors_total[5m])) / sum(rate(http_server_request_duration_seconds_count[5m]))",
+          "legendFormat": "Error %",
+          "refId": "A"
+        }
+      ],
+      "title": "Business Error Ratio (last 5m)",
+      "type": "stat"
+    },
+
+    // ── Row: Business Errors Over Time ───────────────────────────────────────
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 101,
+      "title": "Business Errors — Trends",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Business error rate per minute, split by ErrorType. Spikes indicate validation surges, auth issues, or circuit-breaker trips.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "gradientMode": "opacity" },
+          "unit": "short"
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "NotFound" },        "properties": [{ "id": "color", "value": { "fixedColor": "#FF9830", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "Validation" },      "properties": [{ "id": "color", "value": { "fixedColor": "#FADE2A", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "Unauthorized" },    "properties": [{ "id": "color", "value": { "fixedColor": "#F2495C", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "Forbidden" },       "properties": [{ "id": "color", "value": { "fixedColor": "#B877D9", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "Conflict" },        "properties": [{ "id": "color", "value": { "fixedColor": "#5794F2", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "ServiceUnavailable" }, "properties": [{ "id": "color", "value": { "fixedColor": "#FF0000", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "Failure" },         "properties": [{ "id": "color", "value": { "fixedColor": "#C4162A", "mode": "fixed" } }] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 14, "x": 0, "y": 6 },
+      "id": 10,
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "max", "lastNotNull"] } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (error_type) (rate(b2b_business_errors_total[$__rate_interval])) * 60",
+          "legendFormat": "{{ error_type }}",
+          "refId": "A"
+        }
+      ],
+      "title": "Business Error Rate by Type (errors/min)",
+      "type": "timeseries"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Distribution of business errors by ErrorType over the selected time range.",
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 8, "w": 10, "x": 14, "y": 6 },
+      "id": 11,
+      "options": {
+        "pieType": "donut",
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "right", "values": ["percent", "value"] }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (error_type) (increase(b2b_business_errors_total[$__range]))",
+          "legendFormat": "{{ error_type }}",
+          "refId": "A"
+        }
+      ],
+      "title": "Error Distribution by Type",
+      "type": "piechart"
+    },
+
+    // ── Row: Top Error Requests ──────────────────────────────────────────────
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "id": 102,
+      "title": "Top Error Requests",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "MediatR request types generating the most business errors. Helps pinpoint which command or query is broken.",
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "errors/min" }, "properties": [{ "id": "custom.width", "value": 100 }] },
+          { "matcher": { "id": "byName", "options": "error_type" }, "properties": [{ "id": "custom.width", "value": 130 }] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "id": 20,
+      "options": { "sortBy": [{ "displayName": "errors/min", "desc": true }], "footer": { "show": false } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "topk(10, sum by (request_name, error_type) (rate(b2b_business_errors_total[$__rate_interval])) * 60)",
+          "legendFormat": "",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        { "id": "organize", "options": { "renameByName": { "request_name": "Request", "error_type": "Error Type", "Value": "errors/min" } } },
+        { "id": "sortBy", "options": { "fields": [{ "displayName": "errors/min", "desc": true }] } }
+      ],
+      "title": "Top 10 Error-Generating Requests",
+      "type": "table"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Business error rate per minute split by request name — identify which handler is degraded.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 1, "fillOpacity": 5 },
+          "unit": "short"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "id": 21,
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "max"] } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "topk(10, sum by (request_name) (rate(b2b_business_errors_total[$__rate_interval])) * 60)",
+          "legendFormat": "{{ request_name }}",
+          "refId": "A"
+        }
+      ],
+      "title": "Error Rate by Request Name (top 10)",
+      "type": "timeseries"
+    },
+
+    // ── Row: Unhandled Exceptions ────────────────────────────────────────────
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "id": 103,
+      "title": "Unhandled Exceptions (Bugs)",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Unhandled exceptions per minute by exception type. Any value > 0 indicates a bug escaping the MediatR pipeline.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2, "fillOpacity": 20, "gradientMode": "opacity" },
+          "color": { "fixedColor": "red", "mode": "fixed" },
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.01 }] }
+        }
+      },
+      "gridPos": { "h": 7, "w": 14, "x": 0, "y": 24 },
+      "id": 30,
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "max", "lastNotNull"] } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (exception_type) (rate(b2b_unhandled_exceptions_total[$__rate_interval])) * 60",
+          "legendFormat": "{{ exception_type }}",
+          "refId": "A"
+        }
+      ],
+      "title": "Unhandled Exceptions Rate by Type (exceptions/min)",
+      "type": "timeseries"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "HTTP paths generating unhandled exceptions — pinpoints which endpoint has a bug.",
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Value" }, "properties": [{ "id": "displayName", "value": "exceptions/min" }, { "id": "custom.width", "value": 110 }] }
+        ]
+      },
+      "gridPos": { "h": 7, "w": 10, "x": 14, "y": 24 },
+      "id": 31,
+      "options": { "footer": { "show": false } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "topk(10, sum by (request_path, exception_type) (rate(b2b_unhandled_exceptions_total[$__rate_interval])) * 60)",
+          "legendFormat": "",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        { "id": "organize", "options": { "renameByName": { "request_path": "Path", "exception_type": "Exception Type" } } },
+        { "id": "sortBy", "options": { "fields": [{ "displayName": "exceptions/min", "desc": true }] } }
+      ],
+      "title": "Top Exception Sources by Path",
+      "type": "table"
+    }
+  ],
+
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["b2b", "errors", "apm", "observability"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "B2B Platform — Error Log & APM",
+  "uid": "b2b-error-apm",
+  "version": 1,
+  "weekStart": ""
+}

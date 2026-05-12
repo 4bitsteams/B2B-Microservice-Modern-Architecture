@@ -1,0 +1,239 @@
+@page "/discounts"
+@attribute [Authorize(Roles = "TenantAdmin,SuperAdmin")]
+@inject IDiscountService DiscountService
+@inject NavigationManager Nav
+
+<PageTitle>Discounts — B2B Platform</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Discounts</h1>
+        <p>Manage promotional discounts applied automatically at checkout.</p>
+    </div>
+    <button class="btn btn-primary d-flex align-items-center gap-2" @onclick="() => _showCreate = true">
+        <i class="bi bi-plus-lg"></i> New Discount
+    </button>
+</div>
+
+<ErrorAlert Message="@_error" />
+<SuccessAlert Message="@_success" />
+
+@if (_loading)
+{
+    <LoadingSpinner Message="Loading discounts…" />
+}
+else if (_discounts?.Items.Count == 0)
+{
+    <div class="b2b-card">
+        <div class="empty-state">
+            <div class="empty-icon"><i class="bi bi-tag"></i></div>
+            <h5>No discounts yet</h5>
+            <p>Create your first discount to offer promotions to your customers.</p>
+            <button class="btn btn-primary" @onclick="() => _showCreate = true">Create Discount</button>
+        </div>
+    </div>
+}
+else
+{
+    <div class="table-b2b">
+        <table class="table mb-0">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Value</th>
+                    <th>Usage</th>
+                    <th>Period</th>
+                    <th>Status</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var d in _discounts!.Items)
+                {
+                    <tr>
+                        <td>
+                            <div class="fw-semibold">@d.Name</div>
+                            @if (!string.IsNullOrEmpty(d.Description))
+                            {
+                                <div class="text-muted small text-truncate" style="max-width:200px;">@d.Description</div>
+                            }
+                        </td>
+                        <td>
+                            <span class="badge" style="background:#eef0fd;color:#4361ee;">@d.Type</span>
+                        </td>
+                        <td class="fw-semibold">
+                            @(d.Type == "Percentage" ? $"{d.Value}%" : d.Value.ToString("C"))
+                        </td>
+                        <td class="text-muted">
+                            @d.UsageCount @(d.MaxUsageCount.HasValue ? $"/ {d.MaxUsageCount}" : "/ ∞")
+                        </td>
+                        <td class="text-muted small">
+                            @(d.StartDate?.ToString("MMM d") ?? "Now") –
+                            @(d.EndDate?.ToString("MMM d, yyyy") ?? "No expiry")
+                        </td>
+                        <td>
+                            <StatusBadge Status="@(d.IsActive ? "active" : "inactive")" />
+                        </td>
+                        <td class="text-end">
+                            @if (d.IsActive)
+                            {
+                                <button class="btn btn-sm btn-outline-danger"
+                                        @onclick="() => DeactivateAsync(d)">
+                                    Deactivate
+                                </button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <Pagination CurrentPage="_page"
+                TotalPages="_discounts.TotalPages"
+                TotalCount="_discounts.TotalCount"
+                OnPageChanged="OnPageChanged" />
+}
+
+<!-- Create Discount Modal -->
+@if (_showCreate)
+{
+    <div class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content border-0 shadow">
+                <div class="modal-header border-0">
+                    <h5 class="modal-title fw-semibold">New Discount</h5>
+                    <button type="button" class="btn-close" @onclick="() => _showCreate = false"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold">Name</label>
+                        <input class="form-control" @bind="_createForm.Name" placeholder="Summer Sale 20%" />
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Type</label>
+                            <select class="form-select" @bind="_createForm.Type">
+                                <option value="Percentage">Percentage (%)</option>
+                                <option value="FixedAmount">Fixed Amount ($)</option>
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Value</label>
+                            <input type="number" class="form-control" @bind="_createForm.Value"
+                                   min="0.01" step="0.01" placeholder="20" />
+                        </div>
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">Start Date (optional)</label>
+                            <input type="date" class="form-control" @bind="_createForm.StartDate" />
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-semibold">End Date (optional)</label>
+                            <input type="date" class="form-control" @bind="_createForm.EndDate" />
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold">Min. Order Amount (optional)</label>
+                        <input type="number" class="form-control" @bind="_createForm.MinOrderAmount"
+                               min="0" step="0.01" placeholder="e.g. 100" />
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold">Max Usage Count (optional)</label>
+                        <input type="number" class="form-control" @bind="_createForm.MaxUsageCount"
+                               min="1" placeholder="Leave blank for unlimited" />
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold">Description (optional)</label>
+                        <textarea class="form-control" @bind="_createForm.Description" rows="2"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer border-0">
+                    <button class="btn btn-outline-secondary" @onclick="() => _showCreate = false">Cancel</button>
+                    <button class="btn btn-primary" @onclick="CreateAsync" disabled="@_creating">
+                        @if (_creating)
+                        {
+                            <span class="spinner-border spinner-border-sm me-2"></span>
+                        }
+                        Create Discount
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private Models.Common.PagedResult<DiscountDto>? _discounts;
+    private bool _loading = true;
+    private bool _showCreate;
+    private bool _creating;
+    private int _page = 1;
+    private string? _error;
+    private string? _success;
+    private CreateDiscountForm _createForm = new();
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _discounts = await DiscountService.GetDiscountsAsync(_page);
+        _loading = false;
+    }
+
+    private async Task OnPageChanged(int page)
+    {
+        _page = page;
+        await LoadAsync();
+    }
+
+    private async Task DeactivateAsync(DiscountDto discount)
+    {
+        var ok = await DiscountService.DeactivateDiscountAsync(discount.Id);
+        if (ok)
+        {
+            _success = $"Discount '{discount.Name}' deactivated.";
+            await LoadAsync();
+        }
+        else _error = "Failed to deactivate discount.";
+    }
+
+    private async Task CreateAsync()
+    {
+        _creating = true;
+        _error = null;
+
+        var request = new Models.Discounts.CreateDiscountRequest(
+            _createForm.Name, _createForm.Type, _createForm.Value,
+            _createForm.Description,
+            _createForm.StartDate, _createForm.EndDate,
+            _createForm.MinOrderAmount, _createForm.MaxUsageCount);
+
+        var result = await DiscountService.CreateDiscountAsync(request);
+        if (result is not null)
+        {
+            _showCreate = false;
+            _success = $"Discount '{result.Name}' created successfully.";
+            _createForm = new();
+            await LoadAsync();
+        }
+        else _error = "Failed to create discount.";
+
+        _creating = false;
+    }
+
+    private sealed class CreateDiscountForm
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Type { get; set; } = "Percentage";
+        public decimal Value { get; set; }
+        public string? Description { get; set; }
+        public DateTime? StartDate { get; set; }
+        public DateTime? EndDate { get; set; }
+        public decimal? MinOrderAmount { get; set; }
+        public int? MaxUsageCount { get; set; }
+    }
+}

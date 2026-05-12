@@ -1,0 +1,156 @@
+@page "/products/{Id:guid}"
+@attribute [Authorize]
+@inject IProductService ProductService
+@inject IBasketService BasketService
+@inject NavigationManager Nav
+
+<PageTitle>Product Detail — B2B Platform</PageTitle>
+
+@if (_loading)
+{
+    <LoadingSpinner Message="Loading product…" />
+}
+else if (_product is null)
+{
+    <div class="empty-state">
+        <div class="empty-icon"><i class="bi bi-box-seam"></i></div>
+        <h5>Product not found</h5>
+        <a href="/products" class="btn btn-primary">Back to Products</a>
+    </div>
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <nav aria-label="breadcrumb">
+                <ol class="breadcrumb mb-1">
+                    <li class="breadcrumb-item"><a href="/products">Products</a></li>
+                    <li class="breadcrumb-item active">@_product.Name</li>
+                </ol>
+            </nav>
+            <h1>@_product.Name</h1>
+        </div>
+    </div>
+
+    <SuccessAlert Message="@_success" />
+    <ErrorAlert Message="@_error" />
+
+    <div class="row g-3">
+        <div class="col-lg-8">
+            <div class="b2b-card p-4">
+                <div class="d-flex align-items-center gap-3 mb-4">
+                    <div class="stat-icon" style="background:#eef0fd;width:60px;height:60px;font-size:1.6rem;">
+                        <i class="bi bi-box-seam" style="color:#4361ee;"></i>
+                    </div>
+                    <div>
+                        <h4 class="fw-bold mb-1">@_product.Name</h4>
+                        <span class="text-muted small">SKU: @_product.Sku</span>
+                    </div>
+                    <div class="ms-auto">
+                        <StatusBadge Status="@(_product.IsActive ? "active" : "inactive")" />
+                    </div>
+                </div>
+
+                <p class="text-muted">@_product.Description</p>
+
+                <div class="row g-3 mt-2">
+                    <div class="col-sm-4">
+                        <div class="p-3 rounded" style="background:#f8fafc;">
+                            <div class="small text-muted mb-1">Category</div>
+                            <div class="fw-semibold">@_product.CategoryName</div>
+                        </div>
+                    </div>
+                    <div class="col-sm-4">
+                        <div class="p-3 rounded" style="background:#f8fafc;">
+                            <div class="small text-muted mb-1">Stock</div>
+                            <div class="fw-semibold @(_product.IsLowStock ? "text-warning" : "")">
+                                @_product.StockQuantity units
+                                @if (_product.IsLowStock)
+                                {
+                                    <span class="small text-warning ms-1">(low)</span>
+                                }
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-sm-4">
+                        <div class="p-3 rounded" style="background:#f8fafc;">
+                            <div class="small text-muted mb-1">Added</div>
+                            <div class="fw-semibold">@_product.CreatedAt.ToString("MMM d, yyyy")</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="b2b-card p-4">
+                <div class="text-center mb-4">
+                    <div class="display-5 fw-bold text-primary-b2b">@_product.Price.ToString("C")</div>
+                    <div class="text-muted small">per unit</div>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label fw-semibold small">Quantity</label>
+                    <div class="input-group">
+                        <button class="btn btn-outline-secondary" @onclick="() => _qty = Math.Max(1, _qty - 1)">−</button>
+                        <input type="number" class="form-control text-center" @bind="_qty" min="1"
+                               max="@_product.StockQuantity" />
+                        <button class="btn btn-outline-secondary"
+                                @onclick="() => _qty = Math.Min(_product.StockQuantity, _qty + 1)">+</button>
+                    </div>
+                    <div class="small text-muted mt-1">
+                        Subtotal: <strong>@((_product.Price * _qty).ToString("C"))</strong>
+                    </div>
+                </div>
+
+                <button class="btn btn-primary w-100 py-2 fw-semibold mb-2"
+                        @onclick="AddToBasket"
+                        disabled="@(!_product.IsActive || _product.StockQuantity == 0 || _adding)">
+                    @if (_adding)
+                    {
+                        <span class="spinner-border spinner-border-sm me-2"></span>
+                        <span>Adding…</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-cart-plus me-2"></i>
+                        <span>Add to Basket</span>
+                    }
+                </button>
+
+                <a href="/basket" class="btn btn-outline-secondary w-100">
+                    <i class="bi bi-cart3 me-2"></i> View Basket
+                </a>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private ProductDto? _product;
+    private bool _loading = true;
+    private bool _adding;
+    private int _qty = 1;
+    private string? _success;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _product = await ProductService.GetProductAsync(Id);
+        _loading = false;
+    }
+
+    private async Task AddToBasket()
+    {
+        _adding = true;
+        _error = null;
+        var ok = await BasketService.AddItemAsync(new Models.Basket.AddToBasketRequest(
+            _product!.Id, _product.Name, _product.Sku, _product.Price, _qty));
+
+        _success = ok ? $"Added {_qty}× '{_product.Name}' to basket." : null;
+        _error   = ok ? null : "Failed to add item to basket.";
+        _adding  = false;
+    }
+}

@@ -1,0 +1,18 @@
+<span class="badge rounded-pill @GetCssClass()">@Status</span>
+
+@code {
+    [Parameter, EditorRequired] public string Status { get; set; } = string.Empty;
+
+    private string GetCssClass() => Status?.ToLowerInvariant() switch
+    {
+        "pending"    => "badge-pending",
+        "confirmed"  => "badge-confirmed",
+        "processing" => "badge-processing",
+        "shipped"    => "badge-shipped",
+        "delivered"  => "badge-delivered",
+        "cancelled"  => "badge-cancelled",
+        "active"     => "badge-active",
+        "inactive"   => "badge-inactive",
+        _            => "bg-secondary"
+    };
+}

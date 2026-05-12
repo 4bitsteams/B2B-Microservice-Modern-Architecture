@@ -1,0 +1,287 @@
+@page "/orders/create"
+@attribute [Authorize]
+@inject IOrderService OrderService
+@inject IProductService ProductService
+@inject NavigationManager Nav
+
+<PageTitle>Create Order — B2B Platform</PageTitle>
+
+<div class="page-header">
+    <div>
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb mb-1">
+                <li class="breadcrumb-item"><a href="/orders">Orders</a></li>
+                <li class="breadcrumb-item active">Create Order</li>
+            </ol>
+        </nav>
+        <h1>Create New Order</h1>
+    </div>
+</div>
+
+<ErrorAlert Message="@_error" />
+
+<EditForm Model="_form" OnValidSubmit="SubmitAsync">
+    <DataAnnotationsValidator />
+
+    <div class="row g-3">
+        <!-- Left: Shipping + Items -->
+        <div class="col-lg-8">
+            <!-- Shipping Address -->
+            <div class="b2b-card p-4 mb-3">
+                <h6 class="fw-semibold mb-3">
+                    <i class="bi bi-geo-alt me-2 text-primary-b2b"></i>Shipping Address
+                </h6>
+                <div class="row g-3">
+                    <div class="col-12">
+                        <label class="form-label small fw-semibold">Street Address</label>
+                        <input class="form-control" @bind="_form.Street" placeholder="123 Main St" />
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small fw-semibold">City</label>
+                        <input class="form-control" @bind="_form.City" placeholder="New York" />
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label small fw-semibold">State</label>
+                        <input class="form-control" @bind="_form.State" placeholder="NY" />
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label small fw-semibold">Postal Code</label>
+                        <input class="form-control" @bind="_form.PostalCode" placeholder="10001" />
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label small fw-semibold">Country</label>
+                        <input class="form-control" @bind="_form.Country" placeholder="US" maxlength="3" />
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label small fw-semibold">Notes (optional)</label>
+                        <textarea class="form-control" @bind="_form.Notes" rows="2"
+                                  placeholder="Special instructions for the fulfilment team…"></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Order Items -->
+            <div class="b2b-card p-4">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="fw-semibold mb-0">
+                        <i class="bi bi-list-ul me-2 text-primary-b2b"></i>Order Items
+                    </h6>
+                    <button type="button" class="btn btn-sm btn-outline-primary" @onclick="ShowProductPicker">
+                        <i class="bi bi-plus me-1"></i> Add Item
+                    </button>
+                </div>
+
+                @if (_items.Count == 0)
+                {
+                    <div class="empty-state py-3">
+                        <div class="empty-icon" style="font-size:2rem;"><i class="bi bi-cart3"></i></div>
+                        <p class="mb-0">No items added yet. Click "Add Item" to begin.</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="table-responsive">
+                        <table class="table small mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Product</th>
+                                    <th class="text-center" style="width:100px;">Qty</th>
+                                    <th class="text-end">Unit Price</th>
+                                    <th class="text-end">Subtotal</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var item in _items)
+                                {
+                                    <tr>
+                                        <td>
+                                            <div class="fw-semibold">@item.ProductName</div>
+                                            <div class="text-muted" style="font-size:0.75rem;">@item.Sku</div>
+                                        </td>
+                                        <td>
+                                            <input type="number" class="form-control form-control-sm text-center"
+                                                   @bind="item.Quantity" min="1" style="width:70px;" />
+                                        </td>
+                                        <td class="text-end">@item.UnitPrice.ToString("C")</td>
+                                        <td class="text-end fw-semibold">@((item.UnitPrice * item.Quantity).ToString("C"))</td>
+                                        <td class="text-center">
+                                            <button type="button" class="btn btn-sm btn-link text-danger p-0"
+                                                    @onclick="() => _items.Remove(item)">
+                                                <i class="bi bi-trash"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        </div>
+
+        <!-- Right: Summary -->
+        <div class="col-lg-4">
+            <div class="b2b-card p-4 sticky-top" style="top:80px;">
+                <h6 class="fw-semibold mb-3">Order Summary</h6>
+
+                <dl class="row small mb-3">
+                    <dt class="col-7 text-muted">Items</dt>
+                    <dd class="col-5 text-end">@_items.Count</dd>
+                    <dt class="col-7 text-muted">Subtotal</dt>
+                    <dd class="col-5 text-end">@Subtotal.ToString("C")</dd>
+                    <dt class="col-7 text-muted">Tax (est.)</dt>
+                    <dd class="col-5 text-end">@EstimatedTax.ToString("C")</dd>
+                </dl>
+
+                <hr />
+
+                <div class="d-flex justify-content-between fw-bold mb-4">
+                    <span>Estimated Total</span>
+                    <span class="text-primary-b2b fs-5">@EstimatedTotal.ToString("C")</span>
+                </div>
+
+                <button type="submit" class="btn btn-primary w-100 py-2 fw-semibold"
+                        disabled="@(_submitting || _items.Count == 0)">
+                    @if (_submitting)
+                    {
+                        <span class="spinner-border spinner-border-sm me-2"></span>
+                        <span>Placing Order…</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-bag-check me-2"></i>
+                        <span>Place Order</span>
+                    }
+                </button>
+
+                <a href="/basket" class="btn btn-outline-secondary w-100 mt-2">
+                    <i class="bi bi-cart3 me-2"></i> Use Basket Items
+                </a>
+            </div>
+        </div>
+    </div>
+</EditForm>
+
+<!-- Product Picker Modal -->
+@if (_showPicker)
+{
+    <div class="modal d-block" tabindex="-1" style="background:rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content border-0 shadow">
+                <div class="modal-header border-0">
+                    <h5 class="modal-title">Add Product</h5>
+                    <button type="button" class="btn-close" @onclick="() => _showPicker = false"></button>
+                </div>
+                <div class="modal-body">
+                    <input class="form-control mb-3" placeholder="Search products…"
+                           @bind="_pickerSearch" @bind:event="oninput" @oninput="FilterPicker" />
+                    <div class="row g-2">
+                        @foreach (var p in _filteredProducts)
+                        {
+                            <div class="col-sm-6">
+                                <div class="b2b-card p-3 cursor-pointer" @onclick="() => AddProduct(p)"
+                                     style="transition:background 0.15s;">
+                                    <div class="fw-semibold small">@p.Name</div>
+                                    <div class="text-muted" style="font-size:0.75rem;">@p.Sku · @p.CategoryName</div>
+                                    <div class="fw-bold text-primary-b2b mt-1">@p.Price.ToString("C")</div>
+                                    <div class="small text-muted">@p.StockQuantity in stock</div>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private CreateOrderFormModel _form = new();
+    private List<OrderItemDraft> _items = [];
+    private bool _submitting;
+    private bool _showPicker;
+    private string? _error;
+    private List<ProductDto> _allProducts = [];
+    private List<ProductDto> _filteredProducts = [];
+    private string _pickerSearch = string.Empty;
+
+    private decimal Subtotal      => _items.Sum(i => i.UnitPrice * i.Quantity);
+    private decimal EstimatedTax  => Math.Round(Subtotal * 0.1m, 2);
+    private decimal EstimatedTotal => Subtotal + EstimatedTax;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var result = await ProductService.GetProductsAsync(pageSize: 100);
+        _allProducts = result?.Items.Where(p => p.IsActive && p.StockQuantity > 0).ToList() ?? [];
+        _filteredProducts = _allProducts;
+    }
+
+    private void ShowProductPicker()
+    {
+        _pickerSearch = string.Empty;
+        _filteredProducts = _allProducts;
+        _showPicker = true;
+    }
+
+    private void FilterPicker()
+    {
+        _filteredProducts = string.IsNullOrWhiteSpace(_pickerSearch)
+            ? _allProducts
+            : _allProducts.Where(p =>
+                p.Name.Contains(_pickerSearch, StringComparison.OrdinalIgnoreCase) ||
+                p.Sku.Contains(_pickerSearch, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    private void AddProduct(ProductDto product)
+    {
+        var existing = _items.FirstOrDefault(i => i.ProductId == product.Id);
+        if (existing is not null) existing.Quantity++;
+        else _items.Add(new OrderItemDraft(product.Id, product.Name, product.Sku, product.Price));
+        _showPicker = false;
+    }
+
+    private async Task SubmitAsync()
+    {
+        _submitting = true;
+        _error = null;
+
+        var address = new Models.Orders.AddressDto(
+            _form.Street, _form.City, _form.State, _form.PostalCode, _form.Country);
+
+        var request = new Models.Orders.CreateOrderRequest(
+            address, null,
+            _items.Select(i => new Models.Orders.OrderItemRequest(
+                i.ProductId, i.ProductName, i.Sku, i.UnitPrice, i.Quantity)).ToList(),
+            _form.Notes);
+
+        var order = await OrderService.CreateOrderAsync(request);
+
+        if (order is not null)
+            Nav.NavigateTo($"/orders/{order.Id}");
+        else
+        {
+            _error = "Failed to place order. Please try again.";
+            _submitting = false;
+        }
+    }
+
+    private sealed class CreateOrderFormModel
+    {
+        public string Street { get; set; } = string.Empty;
+        public string City { get; set; } = string.Empty;
+        public string State { get; set; } = string.Empty;
+        public string PostalCode { get; set; } = string.Empty;
+        public string Country { get; set; } = "US";
+        public string? Notes { get; set; }
+    }
+
+    private sealed class OrderItemDraft(Guid productId, string name, string sku, decimal price)
+    {
+        public Guid ProductId { get; } = productId;
+        public string ProductName { get; } = name;
+        public string Sku { get; } = sku;
+        public decimal UnitPrice { get; } = price;
+        public int Quantity { get; set; } = 1;
+    }
+}

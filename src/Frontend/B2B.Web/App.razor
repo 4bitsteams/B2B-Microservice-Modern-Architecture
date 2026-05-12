@@ -1,0 +1,25 @@
+<CascadingAuthenticationState>
+    <Router AppAssembly="@typeof(App).Assembly">
+        <Found Context="routeData">
+            <AuthorizeRouteView RouteData="@routeData" DefaultLayout="@typeof(B2B.Web.Layouts.MainLayout)">
+                <NotAuthorized>
+                    <B2B.Web.Components.RedirectToLogin />
+                </NotAuthorized>
+                <Authorizing>
+                    <B2B.Web.Components.LoadingSpinner Message="Authenticating…" />
+                </Authorizing>
+            </AuthorizeRouteView>
+            <FocusOnNavigate RouteData="@routeData" Selector="h1" />
+        </Found>
+        <NotFound>
+            <PageTitle>Not Found — B2B Platform</PageTitle>
+            <LayoutView Layout="@typeof(B2B.Web.Layouts.MainLayout)">
+                <div class="not-found-container text-center mt-5">
+                    <h1 class="display-1 fw-bold text-muted">404</h1>
+                    <p class="lead">The page you're looking for doesn't exist.</p>
+                    <a href="/" class="btn btn-primary px-4">Go to Dashboard</a>
+                </div>
+            </LayoutView>
+        </NotFound>
+    </Router>
+</CascadingAuthenticationState>

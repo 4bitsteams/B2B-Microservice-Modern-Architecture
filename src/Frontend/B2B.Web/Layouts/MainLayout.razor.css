@@ -1,0 +1,10 @@
+.layout-wrapper {
+    display: flex;
+    min-height: 100vh;
+}
+
+/* Override NavLink active class to use our custom style */
+::deep .nav-item-b2b.active {
+    background: rgba(67, 97, 238, 0.2);
+    color: #7b9ef7;
+}

@@ -87,6 +87,13 @@
     <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="9.0.3" />
   </ItemGroup>
 
+  <ItemGroup Label="Blazor Frontend">
+    <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly" Version="9.0.3" />
+    <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="9.0.3" />
+    <PackageVersion Include="Microsoft.AspNetCore.Components.Authorization" Version="9.0.3" />
+    <PackageVersion Include="Blazored.LocalStorage" Version="4.5.0" />
+  </ItemGroup>
+
   <ItemGroup Label="Testing">
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.0.2" />

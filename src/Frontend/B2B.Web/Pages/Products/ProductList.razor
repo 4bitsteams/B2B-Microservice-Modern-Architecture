@@ -1,0 +1,201 @@
+@page "/products"
+@attribute [Authorize]
+@implements IDisposable
+@inject IProductService ProductService
+@inject IBasketService BasketService
+@inject NavigationManager Nav
+
+<PageTitle>Products — B2B Platform</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Products</h1>
+        <p>Browse and add products to your basket.</p>
+    </div>
+    <AuthorizeView Roles="TenantAdmin,SuperAdmin">
+        <Authorized>
+            <a href="/products/create" class="btn btn-primary d-flex align-items-center gap-2">
+                <i class="bi bi-plus-lg"></i> Add Product
+            </a>
+        </Authorized>
+    </AuthorizeView>
+</div>
+
+<SuccessAlert Message="@_successMessage" />
+<ErrorAlert Message="@_errorMessage" />
+
+<!-- Filters -->
+<div class="b2b-card p-3 mb-3">
+    <div class="row g-2">
+        <div class="col-md-5">
+            <div class="search-bar">
+                <i class="bi bi-search"></i>
+                <input class="form-control" placeholder="Search products, SKUs…"
+                       @bind="_search" @bind:event="oninput" @onkeyup="OnSearchKeyUp" />
+            </div>
+        </div>
+        <div class="col-md-3">
+            <select class="form-select" @bind="_selectedCategoryId" @bind:event="onchange"
+                    @bind:after="LoadProductsAsync">
+                <option value="">All Categories</option>
+                @foreach (var cat in _categories)
+                {
+                    <option value="@cat.Id">@cat.Name</option>
+                }
+            </select>
+        </div>
+        <div class="col-md-2">
+            <select class="form-select" @bind="_pageSize" @bind:after="LoadProductsAsync">
+                <option value="12">12 / page</option>
+                <option value="24">24 / page</option>
+                <option value="48">48 / page</option>
+            </select>
+        </div>
+        <div class="col-md-2">
+            <button class="btn btn-outline-secondary w-100" @onclick="ResetFilters">
+                <i class="bi bi-x-circle me-1"></i> Reset
+            </button>
+        </div>
+    </div>
+</div>
+
+@if (_loading)
+{
+    <LoadingSpinner Message="Loading products…" />
+}
+else if (_products?.Items.Count == 0)
+{
+    <div class="b2b-card">
+        <div class="empty-state">
+            <div class="empty-icon"><i class="bi bi-box-seam"></i></div>
+            <h5>No products found</h5>
+            <p>Try adjusting your search filters.</p>
+        </div>
+    </div>
+}
+else
+{
+    <div class="row g-3">
+        @foreach (var product in _products!.Items)
+        {
+            <div class="col-sm-6 col-lg-4 col-xl-3">
+                <div class="b2b-card h-100 d-flex flex-column">
+                    <!-- Product header -->
+                    <div class="p-3 border-bottom" style="background:#f8fafc;border-radius:12px 12px 0 0;">
+                        <div class="d-flex align-items-start justify-content-between gap-2">
+                            <div class="stat-icon flex-shrink-0" style="background:#eef0fd;width:44px;height:44px;">
+                                <i class="bi bi-box-seam" style="color:#4361ee;"></i>
+                            </div>
+                            @if (product.IsLowStock)
+                            {
+                                <span class="badge badge-warning" style="background:#fef3c7;color:#92400e;">
+                                    Low Stock
+                                </span>
+                            }
+                            else if (!product.IsActive)
+                            {
+                                <span class="badge badge-inactive">Inactive</span>
+                            }
+                        </div>
+                    </div>
+
+                    <div class="p-3 flex-grow-1 d-flex flex-column">
+                        <h6 class="fw-semibold mb-1">@product.Name</h6>
+                        <p class="text-muted small mb-2">SKU: @product.Sku</p>
+                        <p class="text-muted small mb-2">@product.CategoryName</p>
+                        <p class="small text-truncate mb-3 text-muted flex-grow-1">@product.Description</p>
+
+                        <div class="d-flex align-items-center justify-content-between mb-3">
+                            <span class="fw-bold fs-5 text-primary-b2b">@product.Price.ToString("C")</span>
+                            <span class="small text-muted">@product.StockQuantity in stock</span>
+                        </div>
+
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-primary btn-sm flex-grow-1"
+                                    @onclick="() => AddToBasket(product)"
+                                    disabled="@(product.StockQuantity == 0 || !product.IsActive)">
+                                <i class="bi bi-cart-plus me-1"></i>
+                                @(product.StockQuantity == 0 ? "Out of Stock" : "Add to Basket")
+                            </button>
+                            <a href="/products/@product.Id" class="btn btn-outline-secondary btn-sm">
+                                <i class="bi bi-eye"></i>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+
+    <Pagination CurrentPage="_page"
+                TotalPages="_products.TotalPages"
+                TotalCount="_products.TotalCount"
+                OnPageChanged="OnPageChanged" />
+}
+
+@code {
+    private Models.Common.PagedResult<ProductDto>? _products;
+    private List<CategoryDto> _categories = [];
+    private bool _loading = true;
+    private string? _successMessage;
+    private string? _errorMessage;
+    private string _search = string.Empty;
+    private string _selectedCategoryId = string.Empty;
+    private int _page = 1;
+    private int _pageSize = 12;
+    private System.Timers.Timer? _searchTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _categories = await ProductService.GetCategoriesAsync() ?? [];
+        await LoadProductsAsync();
+    }
+
+    private async Task LoadProductsAsync()
+    {
+        _loading = true;
+        Guid? categoryId = Guid.TryParse(_selectedCategoryId, out var id) ? id : null;
+        _products = await ProductService.GetProductsAsync(_page, _pageSize, _search, categoryId);
+        _loading = false;
+    }
+
+    private void OnSearchKeyUp(KeyboardEventArgs e)
+    {
+        _searchTimer?.Dispose();
+        var timer = new System.Timers.Timer(400) { AutoReset = false };
+        timer.Elapsed += async (_, _) =>
+        {
+            timer.Dispose();
+            _page = 1;
+            await InvokeAsync(LoadProductsAsync);
+        };
+        _searchTimer = timer;
+        timer.Start();
+    }
+
+    public void Dispose() => _searchTimer?.Dispose();
+
+    private async Task OnPageChanged(int page)
+    {
+        _page = page;
+        await LoadProductsAsync();
+    }
+
+    private async Task ResetFilters()
+    {
+        _search = string.Empty;
+        _selectedCategoryId = string.Empty;
+        _page = 1;
+        await LoadProductsAsync();
+    }
+
+    private async Task AddToBasket(ProductDto product)
+    {
+        _errorMessage = null;
+        var ok = await BasketService.AddItemAsync(new Models.Basket.AddToBasketRequest(
+            product.Id, product.Name, product.Sku, product.Price, 1));
+
+        if (ok) _successMessage = $"'{product.Name}' added to basket.";
+        else    _errorMessage   = "Failed to add item to basket.";
+    }
+}

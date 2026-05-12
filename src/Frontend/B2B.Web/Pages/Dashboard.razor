@@ -1,0 +1,170 @@
+@page "/"
+@attribute [Authorize]
+@inject IOrderService OrderService
+@inject IBasketService BasketService
+
+<PageTitle>Dashboard — B2B Platform</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Dashboard</h1>
+        <p>Welcome back! Here's what's happening with your account.</p>
+    </div>
+    <a href="/orders/create" class="btn btn-primary gap-2 d-flex align-items-center">
+        <i class="bi bi-plus-lg"></i> New Order
+    </a>
+</div>
+
+@if (_loading)
+{
+    <LoadingSpinner Message="Loading dashboard…" />
+}
+else
+{
+    <!-- Stat Cards -->
+    <div class="row g-3 mb-4">
+        <div class="col-sm-6 col-xl-3">
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#eef0fd;">
+                    <i class="bi bi-bag-check" style="color:#4361ee;"></i>
+                </div>
+                <div>
+                    <div class="stat-value">@_totalOrders</div>
+                    <div class="stat-label">Total Orders</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-xl-3">
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#f0fdf4;">
+                    <i class="bi bi-currency-dollar" style="color:#22c55e;"></i>
+                </div>
+                <div>
+                    <div class="stat-value">@_totalSpend.ToString("C0")</div>
+                    <div class="stat-label">Total Spend</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-xl-3">
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#fff7ed;">
+                    <i class="bi bi-clock-history" style="color:#f59e0b;"></i>
+                </div>
+                <div>
+                    <div class="stat-value">@_pendingOrders</div>
+                    <div class="stat-label">Pending Orders</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-xl-3">
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#fef2f2;">
+                    <i class="bi bi-cart3" style="color:#ef4444;"></i>
+                </div>
+                <div>
+                    <div class="stat-value">@_basketItems</div>
+                    <div class="stat-label">Items in Basket</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Orders -->
+    <div class="row g-3">
+        <div class="col-xl-7">
+            <div class="b2b-card p-0 overflow-hidden">
+                <div class="d-flex align-items-center justify-content-between p-3 border-bottom">
+                    <h6 class="fw-semibold mb-0">Recent Orders</h6>
+                    <a href="/orders" class="btn btn-sm btn-outline-secondary">View All</a>
+                </div>
+                @if (_recentOrders?.Count > 0)
+                {
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0 small">
+                            <thead class="table-light">
+                                <tr>
+                                    <th class="fw-semibold text-muted">Order #</th>
+                                    <th class="fw-semibold text-muted">Status</th>
+                                    <th class="fw-semibold text-muted">Amount</th>
+                                    <th class="fw-semibold text-muted">Date</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var order in _recentOrders)
+                                {
+                                    <tr class="cursor-pointer" @onclick="() => Nav.NavigateTo($"/orders/{order.Id}")">
+                                        <td class="fw-semibold text-primary-b2b">@order.OrderNumber</td>
+                                        <td><StatusBadge Status="@order.Status" /></td>
+                                        <td class="fw-semibold">@order.TotalAmount.ToString("C")</td>
+                                        <td class="text-muted">@order.CreatedAt.ToString("MMM d")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                else
+                {
+                    <div class="empty-state">
+                        <div class="empty-icon"><i class="bi bi-bag-x"></i></div>
+                        <p>No orders yet.</p>
+                        <a href="/orders/create" class="btn btn-sm btn-primary">Create First Order</a>
+                    </div>
+                }
+            </div>
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="col-xl-5">
+            <div class="b2b-card p-3">
+                <h6 class="fw-semibold mb-3">Quick Actions</h6>
+                <div class="d-grid gap-2">
+                    <a href="/orders/create" class="btn btn-outline-primary d-flex align-items-center gap-2">
+                        <i class="bi bi-plus-circle"></i> Place New Order
+                    </a>
+                    <a href="/products" class="btn btn-outline-secondary d-flex align-items-center gap-2">
+                        <i class="bi bi-box-seam"></i> Browse Products
+                    </a>
+                    <a href="/basket" class="btn btn-outline-secondary d-flex align-items-center gap-2">
+                        <i class="bi bi-cart3"></i> View Basket
+                    </a>
+                    <a href="/orders" class="btn btn-outline-secondary d-flex align-items-center gap-2">
+                        <i class="bi bi-list-ul"></i> All Orders
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Inject] private NavigationManager Nav { get; set; } = default!;
+
+    private bool _loading = true;
+    private int _totalOrders;
+    private decimal _totalSpend;
+    private int _pendingOrders;
+    private int _basketItems;
+    private List<Models.Orders.OrderSummaryDto>? _recentOrders;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var ordersTask  = OrderService.GetOrdersAsync(page: 1, pageSize: 5);
+        var basketTask  = BasketService.GetItemCountAsync();
+
+        await Task.WhenAll(ordersTask, basketTask);
+
+        var orders = await ordersTask;
+        _basketItems = await basketTask;
+
+        if (orders is not null)
+        {
+            _totalOrders  = orders.TotalCount;
+            _recentOrders = orders.Items;
+            _totalSpend   = orders.Items.Sum(o => o.TotalAmount);
+            _pendingOrders = orders.Items.Count(o => o.Status is "Pending" or "Processing");
+        }
+
+        _loading = false;
+    }
+}
