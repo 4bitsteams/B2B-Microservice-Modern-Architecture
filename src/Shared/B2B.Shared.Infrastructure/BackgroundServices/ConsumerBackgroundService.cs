@@ -67,7 +67,9 @@ public abstract class ConsumerBackgroundService<TMessage> : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger _logger;
-    private readonly ConsumerBackgroundServiceOptions _options;
+
+    /// <summary>Resolved options accessible to derived classes without re-capturing the constructor parameter.</summary>
+    protected ConsumerBackgroundServiceOptions Options { get; }
 
     // Computed once — avoids per-cycle string allocation on the hot path.
     private readonly string _serviceName;
@@ -79,7 +81,7 @@ public abstract class ConsumerBackgroundService<TMessage> : BackgroundService
     {
         _scopeFactory = scopeFactory;
         _logger       = logger;
-        _options      = options.Value;
+        Options       = options.Value;
         _serviceName  = GetType().Name;
     }
 
@@ -97,8 +99,8 @@ public abstract class ConsumerBackgroundService<TMessage> : BackgroundService
             // do not spin at 100 % CPU on an empty queue.
             // When we processed a full batch, skip the delay so we immediately
             // drain the remaining queue before sleeping.
-            var delay = processedCount < _options.BatchSize
-                ? _options.PollingInterval
+            var delay = processedCount < Options.BatchSize
+                ? Options.PollingInterval
                 : TimeSpan.Zero;
 
             if (delay > TimeSpan.Zero)
@@ -127,7 +129,7 @@ public abstract class ConsumerBackgroundService<TMessage> : BackgroundService
         // ── Layer 2: batch-fetch timeout ─────────────────────────────────────
         // Fetch timeout = 3× polling interval so a slow DB never blocks shutdown.
         using var fetchCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-        fetchCts.CancelAfter(_options.PollingInterval * 3);
+        fetchCts.CancelAfter(Options.PollingInterval * 3);
 
         try
         {
@@ -172,7 +174,7 @@ public abstract class ConsumerBackgroundService<TMessage> : BackgroundService
     {
         // ── Layer 3: per-message timeout (linked to host-shutdown token) ──────
         using var messageCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-        messageCts.CancelAfter(_options.MessageProcessingTimeout);
+        messageCts.CancelAfter(Options.MessageProcessingTimeout);
 
         // Restore correlation ID so all log lines within processing carry the
         // originating request's trace ID for end-to-end observability.
@@ -204,9 +206,9 @@ public abstract class ConsumerBackgroundService<TMessage> : BackgroundService
 
             _logger.LogWarning(
                 "Message processing timed out ({Timeout}s) in {ServiceName} | CorrelationId: {CorrelationId}",
-                _options.MessageProcessingTimeout.TotalSeconds, _serviceName, correlationId);
+                Options.MessageProcessingTimeout.TotalSeconds, _serviceName, correlationId);
 
-            if (!_options.ContinueOnMessageError)
+            if (!Options.ContinueOnMessageError)
                 throw;
         }
         catch (Exception ex)
@@ -220,7 +222,7 @@ public abstract class ConsumerBackgroundService<TMessage> : BackgroundService
                 "Error processing {MessageType} in {ServiceName} | CorrelationId: {CorrelationId}",
                 typeof(TMessage).Name, _serviceName, correlationId);
 
-            if (!_options.ContinueOnMessageError)
+            if (!Options.ContinueOnMessageError)
                 throw;
         }
     }

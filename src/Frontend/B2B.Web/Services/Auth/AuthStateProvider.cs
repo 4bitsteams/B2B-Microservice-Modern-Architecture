@@ -72,7 +72,7 @@ public sealed class AuthStateProvider(ILocalStorageService localStorage)
 
     private static byte[] DecodeBase64Url(string base64Url)
     {
-        var padded = base64Url.Length % 4 switch
+        var padded = (base64Url.Length % 4) switch
         {
             2 => base64Url + "==",
             3 => base64Url + "=",

@@ -96,7 +96,7 @@ public sealed class OutboxRelayBackgroundService<TContext>(
                 FOR UPDATE SKIP LOCKED
                 """,
                 MaxRetryCount,
-                options.Value.BatchSize)
+                Options.BatchSize)
             .AsTracking()
             .ToListAsync(ct);
     }

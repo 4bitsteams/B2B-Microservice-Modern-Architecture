@@ -15,4 +15,10 @@
     <Version>1.0.0</Version>
     <Copyright>Copyright © 2025 B2B Platform</Copyright>
   </PropertyGroup>
+
+  <!-- GHSA-4625-4j76-fww9 affects all current OpenTelemetry.Exporter.OpenTelemetryProtocol releases.
+       Suppressed until a patched version is published upstream. -->
+  <ItemGroup>
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-4625-4j76-fww9" />
+  </ItemGroup>
 </Project>

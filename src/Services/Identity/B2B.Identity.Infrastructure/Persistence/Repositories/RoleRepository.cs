@@ -12,7 +12,7 @@ public sealed class RoleRepository(IdentityDbContext context)
         await DbSet.FirstOrDefaultAsync(r => r.Name == name, ct);
 
     public async Task<IReadOnlyList<Role>> GetByUserIdAsync(Guid userId, CancellationToken ct = default) =>
-        await context.UserRoles
+        await Context.UserRoles
             .Where(ur => ur.UserId == userId)
             .Select(ur => ur.Role)
             .ToListAsync(ct);

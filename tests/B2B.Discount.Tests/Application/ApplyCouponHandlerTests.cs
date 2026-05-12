@@ -14,6 +14,7 @@ public sealed class ApplyCouponHandlerTests
     private readonly ICouponRepository _repo = Substitute.For<ICouponRepository>();
     private readonly ICurrentUser _currentUser = Substitute.For<ICurrentUser>();
     private readonly IUnitOfWork _uow = Substitute.For<IUnitOfWork>();
+    private readonly IDistributedLock _distributedLock = Substitute.For<IDistributedLock>();
     private readonly ApplyCouponHandler _handler;
 
     private static readonly Guid TenantId = Guid.NewGuid();
@@ -21,7 +22,14 @@ public sealed class ApplyCouponHandlerTests
     public ApplyCouponHandlerTests()
     {
         _currentUser.TenantId.Returns(TenantId);
-        _handler = new ApplyCouponHandler(_repo, _currentUser, _uow);
+
+        var lockHandle = Substitute.For<ILockHandle>();
+        lockHandle.IsAcquired.Returns(true);
+        _distributedLock
+            .AcquireAsync(Arg.Any<string>(), Arg.Any<TimeSpan>(), Arg.Any<TimeSpan>(), Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>())
+            .Returns(lockHandle);
+
+        _handler = new ApplyCouponHandler(_repo, _currentUser, _uow, _distributedLock);
     }
 
     [Fact]

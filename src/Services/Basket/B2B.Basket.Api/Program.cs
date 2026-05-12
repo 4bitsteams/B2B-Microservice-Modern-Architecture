@@ -1,4 +1,5 @@
 using System.Reflection;
+using MassTransit;
 using Scalar.AspNetCore;
 using Serilog;
 using B2B.Basket.Application.Commands.AddToBasket;

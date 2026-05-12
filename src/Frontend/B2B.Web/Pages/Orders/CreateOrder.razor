@@ -175,7 +175,7 @@
                 </div>
                 <div class="modal-body">
                     <input class="form-control mb-3" placeholder="Search products…"
-                           @bind="_pickerSearch" @bind:event="oninput" @oninput="FilterPicker" />
+                           @bind="_pickerSearch" @bind:event="oninput" @bind:after="FilterPicker" />
                     <div class="row g-2">
                         @foreach (var p in _filteredProducts)
                         {

@@ -20,7 +20,7 @@
                 else
                 {
                     <li class="page-item @(page == CurrentPage ? "active" : "")">
-                        <button class="page-link" @onclick="() => OnPageChanged.InvokeAsync(page)">@page</button>
+                        <button class="page-link" @onclick="() => OnPageChanged.InvokeAsync(page)">@(page)</button>
                     </li>
                 }
             }

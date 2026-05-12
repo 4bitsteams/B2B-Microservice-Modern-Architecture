@@ -39,11 +39,11 @@ public sealed class MassTransitEventBus(
         var producer = serviceProvider.GetService<ITopicProducer<T>>();
         if (producer is not null)
         {
-            await producer.Produce(message, ctx =>
+            await producer.Produce(message, Pipe.Execute<KafkaSendContext<T>>(ctx =>
             {
                 if (!string.IsNullOrEmpty(correlationId))
                     ctx.Headers.Set("X-Correlation-ID", correlationId);
-            }, ct);
+            }), ct);
             return;
         }
 

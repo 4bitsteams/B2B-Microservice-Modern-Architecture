@@ -92,7 +92,7 @@ else
                             <tbody>
                                 @foreach (var order in _recentOrders)
                                 {
-                                    <tr class="cursor-pointer" @onclick="() => Nav.NavigateTo($"/orders/{order.Id}")">
+                                    <tr class="cursor-pointer" @onclick='() => Nav.NavigateTo($"/orders/{order.Id}")'>
                                         <td class="fw-semibold text-primary-b2b">@order.OrderNumber</td>
                                         <td><StatusBadge Status="@order.Status" /></td>
                                         <td class="fw-semibold">@order.TotalAmount.ToString("C")</td>
